@@ -1,0 +1,15 @@
+{
+  "name": "Tuner",
+  "version": "v1.0.0",
+  "type": "TOOL",
+  "description": "Free TV with an old-school look: Pluto TV, Samsung TV Plus and iptv-org channels plus your own M3U playlists, a TV guide, favourites, search, and CRT TV, Teletext, VCR and Cable guide themes.",
+  "author": "evolver79",
+  "repo_url": "https://github.com/evolver79/nextui-tuner-pak",
+  "release_filename": "Tuner.pak.zip",
+  "changelog": {
+    "v1.0.0": "First release."
+  },
+  "platforms": [
+    "tg5040"
+  ]
+}

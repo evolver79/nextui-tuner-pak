@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match pak.json version
+        run: |
+          v=$(jq -r .version pak.json)
+          [ "$v" = "$GITHUB_REF_NAME" ] || { echo "pak.json version $v != tag $GITHUB_REF_NAME"; exit 1; }
+      - name: Package
+        run: ./package.sh
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes=$(jq -r --arg v "$GITHUB_REF_NAME" '.changelog[$v] // ""' pak.json)
+          gh release create "$GITHUB_REF_NAME" dist/Tuner.pak.zip --title "$GITHUB_REF_NAME" --notes "$notes"

@@ -1,0 +1,15 @@
+# Your own channels for Tuner.
+#
+# Copy this file to playlists.txt (in this same folder) and add one playlist per line:
+#   - an M3U playlist URL:            https://example.com/my-channels.m3u
+#   - an M3U file in this folder:     mine.m3u
+#   - a TV guide (XMLTV), with "epg": epg https://example.com/guide.xml.gz
+#
+# Your channels show up under "My channels" (page 260), are never hidden by the genre or quality settings, and get
+# the guide's now/next when the playlist's tvg-id matches the guide's channel ids.
+# Lines starting with # are ignored. Changes apply the next time Tuner starts (or Settings > Refresh channels now).
+#
+# Examples (remove the # to use them):
+# https://iptv-org.github.io/iptv/categories/classic.m3u
+# http://192.168.1.10:8000/iptv.m3u
+# epg http://192.168.1.10:8000/xmltv.xml
