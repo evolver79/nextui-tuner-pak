@@ -11,6 +11,7 @@ typedef struct {
   int overlay;
   int theme;
   int free_off;          // only your own playlists (no Pluto, Samsung, iptv-org, epgshare01)
+  int suggest_favs;      // suggest a favourite after a lot of watching (off by default)
   int mine_az;           // your channels A-Z instead of playlist order
   int plain_tuning;      // 1: no snow/picture/hiss while a channel loads, just the channel info and LOADING
   char pin[5];           // adult PIN, "" = none
@@ -38,3 +39,11 @@ int is_dead(const char *key);
 void mark_dead(const char *key);
 int fav_count(void);
 void unhide_all(void);
+
+// Watching: seconds per channel, fading (half-life 14 days), and the channels watched most recently.
+void watch_add(const char *key, double seconds);   // records a viewing (counts toward Most watched and Recently watched)
+double watch_score(const char *key);               // faded seconds, 0 when never watched
+int recent_count(void);
+const char *recent_key(int i);                     // 0 = the most recent
+int was_suggested(const char *key);                // favourite suggestions: each channel once
+void mark_suggested(const char *key);

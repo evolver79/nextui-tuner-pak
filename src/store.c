@@ -4,12 +4,13 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <math.h>
 
 char data_dir[512] = ".";
 
 typedef struct { char key[64]; long when; } Entry;
 typedef struct { Entry *v; int n; const char *file; } KeySet;
-static KeySet favs = { 0, 0, "favourites.txt" }, hidden = { 0, 0, "hidden.txt" }, dead = { 0, 0, "dead.txt" };
+static KeySet favs = { 0, 0, "favourites.txt" }, hidden = { 0, 0, "hidden.txt" }, dead = { 0, 0, "dead.txt" }, suggested = { 0, 0, "suggested.txt" };
 
 static void path(char *out, size_t size, const char *file) { snprintf(out, size, "%s/%s", data_dir, file); }
 
@@ -49,11 +50,72 @@ static void set_toggle(KeySet *s, const char *key) {
   set_save(s);
 }
 
+
+// --- watching statistics: watched.txt (key \t seconds \t last time), recent.txt (most recent first) ----------------
+typedef struct { char key[64]; double secs; long last; } Watched;
+static Watched *watched; static int nwatched;
+static char recent[10][64]; static int nrecent;
+#define HALF_LIFE (14.0 * 24 * 3600)
+
+static double faded(const Watched *w, long now) { return w->secs * pow(0.5, (now - w->last) / HALF_LIFE); }
+
+static void watch_save(void) {
+  char p[600]; path(p, sizeof p, "watched.txt");
+  FILE *f = fopen(p, "w");
+  if (f) { long now = time(NULL); for (int i = 0; i < nwatched; i++) if (faded(&watched[i], now) > 10) fprintf(f, "%s\t%.0f\t%ld\n", watched[i].key, watched[i].secs, watched[i].last); fclose(f); }
+  path(p, sizeof p, "recent.txt");
+  f = fopen(p, "w");
+  if (f) { for (int i = 0; i < nrecent; i++) fprintf(f, "%s\n", recent[i]); fclose(f); }
+}
+
+static void watch_load(void) {
+  char p[600]; path(p, sizeof p, "watched.txt");
+  FILE *f = fopen(p, "r"); char line[200];
+  if (f) {
+    while (fgets(line, sizeof line, f)) {
+      char k[64]; double sec; long last;
+      if (sscanf(line, "%63[^\t]\t%lf\t%ld", k, &sec, &last) == 3) {
+        watched = realloc(watched, (nwatched + 1) * sizeof *watched);
+        snprintf(watched[nwatched].key, sizeof watched[nwatched].key, "%s", k); watched[nwatched].secs = sec; watched[nwatched].last = last; nwatched++;
+      }
+    }
+    fclose(f);
+  }
+  path(p, sizeof p, "recent.txt");
+  f = fopen(p, "r");
+  if (f) { while (nrecent < 10 && fgets(line, sizeof line, f)) { line[strcspn(line, "\r\n")] = 0; if (line[0]) snprintf(recent[nrecent++], 64, "%s", line); } fclose(f); }
+}
+
+void watch_add(const char *key, double seconds) {
+  long now = time(NULL);
+  int i = 0; while (i < nwatched && strcmp(watched[i].key, key)) i++;
+  if (i == nwatched) { watched = realloc(watched, (nwatched + 1) * sizeof *watched); snprintf(watched[i].key, sizeof watched[i].key, "%s", key); watched[i].secs = 0; watched[i].last = now; nwatched++; }
+  watched[i].secs = faded(&watched[i], now) + seconds;   // fade what was there, then add
+  watched[i].last = now;
+  // recent: move to the front
+  int r = 0; while (r < nrecent && strcmp(recent[r], key)) r++;
+  if (r == nrecent && nrecent < 10) nrecent++;
+  if (r == nrecent) r = nrecent - 1;
+  memmove(recent[1], recent[0], r * sizeof recent[0]);
+  snprintf(recent[0], sizeof recent[0], "%s", key);
+  watch_save();
+}
+
+double watch_score(const char *key) {
+  for (int i = 0; i < nwatched; i++) if (!strcmp(watched[i].key, key)) return faded(&watched[i], time(NULL));
+  return 0;
+}
+int recent_count(void) { return nrecent; }
+const char *recent_key(int i) { return i >= 0 && i < nrecent ? recent[i] : ""; }
+int was_suggested(const char *key) { return set_find(&suggested, key) >= 0; }
+void mark_suggested(const char *key) { if (!was_suggested(key)) set_toggle(&suggested, key); }
+
 void store_init(const char *dir) {
   snprintf(data_dir, sizeof data_dir, "%s", dir);
   mkdir(data_dir, 0755);
   char p[600]; path(p, sizeof p, "cache"); mkdir(p, 0755);
-  set_load(&favs); set_load(&hidden); set_load(&dead);
+  set_load(&favs); set_load(&hidden); set_load(&dead); set_load(&suggested);
+  watch_load();
 }
 
 void settings_defaults(Settings *s) {
@@ -82,6 +144,7 @@ void settings_load(Settings *s) {
     else if (!strcmp(k, "theme")) s->theme = atoi(v);
     else if (!strcmp(k, "plain_tuning")) s->plain_tuning = atoi(v);
     else if (!strcmp(k, "mine_az")) s->mine_az = atoi(v);
+    else if (!strcmp(k, "suggest_favs")) s->suggest_favs = atoi(v);
     else if (!strcmp(k, "free_off")) s->free_off = atoi(v);
     else if (!strcmp(k, "pin")) snprintf(s->pin, sizeof s->pin, "%s", v);
     else if (!strcmp(k, "last_channel")) snprintf(s->last_channel, sizeof s->last_channel, "%s", v);
@@ -95,8 +158,8 @@ void settings_load(Settings *s) {
 void settings_save(const Settings *s) {
   char p[600]; path(p, sizeof p, "settings.ini");
   FILE *f = fopen(p, "w"); if (!f) return;
-  fprintf(f, "languages=%s\ncountries=%s\ngenres=%x\nadult=%d\nmax_height=%d\noverlay=%d\ntheme=%d\nplain_tuning=%d\nmine_az=%d\nfree_off=%d\npin=%s\nlast_channel=%s\nsetup_done=%d\ncustom_m3u=%s\ncustom_xmltv=%s\n",
-          s->languages, s->countries, s->genres, s->adult, s->max_height, s->overlay, s->theme, s->plain_tuning, s->mine_az, s->free_off, s->pin, s->last_channel, s->setup_done, s->custom_m3u, s->custom_xmltv);
+  fprintf(f, "languages=%s\ncountries=%s\ngenres=%x\nadult=%d\nmax_height=%d\noverlay=%d\ntheme=%d\nplain_tuning=%d\nmine_az=%d\nsuggest_favs=%d\nfree_off=%d\npin=%s\nlast_channel=%s\nsetup_done=%d\ncustom_m3u=%s\ncustom_xmltv=%s\n",
+          s->languages, s->countries, s->genres, s->adult, s->max_height, s->overlay, s->theme, s->plain_tuning, s->mine_az, s->suggest_favs, s->free_off, s->pin, s->last_channel, s->setup_done, s->custom_m3u, s->custom_xmltv);
   fclose(f);
 }
 

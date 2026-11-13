@@ -15,7 +15,7 @@ pick, shows what's on, and plays them with the snow, test cards and channel numb
 - **Tuning in:** snow over the programme's picture while a channel connects and a test card on long waits (or, if
   you prefer, a plain screen with the channel info and LOADING), and a plain-words message when a channel can't be
   played.
-- Favourites, search, channel logos, scanline and CRT picture overlays, a sleep timer, an adult PIN. Tuner starts on
+- Favourites, Most watched and Recently watched (they fill up by themselves as you watch), search, channel logos, scanline and CRT picture overlays, a sleep timer, an adult PIN. Tuner starts on
   the channel you watched last.
 
 Tested on the TrimUI Brick (`tg5040`).

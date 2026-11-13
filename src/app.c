@@ -26,7 +26,7 @@ enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X =
        BTN_L2 = 100, BTN_R2 = 101 };   // the inner triggers are axes; turned into presses below
 
 typedef enum { SCR_SETUP, SCR_LOADING, SCR_INDEX, SCR_GENRES, SCR_LIST, SCR_GUIDE, SCR_SETTINGS, SCR_EDIT, SCR_WATCH, SCR_PIN, SCR_SEARCH, SCR_MYGROUPS } Screen;
-typedef enum { LIST_FAVS, LIST_GENRE, LIST_ALL, LIST_NOW, LIST_MINE, LIST_SEARCH } ListKind;
+typedef enum { LIST_FAVS, LIST_GENRE, LIST_ALL, LIST_NOW, LIST_MINE, LIST_SEARCH, LIST_MOST, LIST_RECENT } ListKind;
 typedef enum { EDIT_LANG, EDIT_COUNTRY, EDIT_GENRE } EditKind;
 
 static SDL_Renderer *ren;
@@ -84,6 +84,10 @@ static int f_all(const Channel *c, int g) { (void)c; (void)g; return 1; }
 static int f_mine(const Channel *c, int g) { (void)g; return is_mine(c); }
 static int has_adult(void) { for (int i = 0; i < chans.n; i++) if (chans.v[i].genre == G_ADULT && !is_hidden(chans.v[i].key)) return 1; return 0; }
 
+static int cmp_score(const void *a, const void *b) {
+  double x = watch_score((*(Channel *const *)a)->key), y = watch_score((*(Channel *const *)b)->key);
+  return x < y ? 1 : x > y ? -1 : 0;
+}
 static void build_view(void) {
   free(view); view = malloc((chans.n + 1) * sizeof *view); nview = 0;
   for (int i = 0; i < chans.n; i++) {
@@ -94,8 +98,17 @@ static void build_view(void) {
     if (list_kind == LIST_NOW && !c->nprogs) continue;
     if (list_kind == LIST_MINE && (!is_mine(c) || (!mine_group_all && strcmp(c->group, mine_group)))) continue;
     if (list_kind == LIST_SEARCH && !contains_ci(c->name, query)) continue;
+    if (list_kind == LIST_MOST && watch_score(c->key) < 30) continue;
+    if (list_kind == LIST_RECENT) continue;   // built in recent order below
     view[nview++] = c;
   }
+  if (list_kind == LIST_MOST) {   // the 20 channels watched most (time fades with a 14-day half-life)
+    qsort(view, nview, sizeof *view, cmp_score);
+    if (nview > 20) nview = 20;
+  }
+  if (list_kind == LIST_RECENT)
+    for (int r = 0; r < recent_count(); r++)
+      for (int i = 0; i < chans.n; i++) if (!strcmp(chans.v[i].key, recent_key(r)) && visible(&chans.v[i])) { view[nview++] = &chans.v[i]; break; }
 }
 static int cmp_order(const void *a, const void *b) { return (*(Channel *const *)a)->order - (*(Channel *const *)b)->order; }
 static int cmp_name(const void *a, const void *b) { return strcasecmp((*(Channel *const *)a)->name, (*(Channel *const *)b)->name); }
@@ -128,10 +141,12 @@ static void say(const char *m) { snprintf(toast, sizeof toast, "%s", m); toast_u
 
 // --- menus -----------------------------------------------------------------------------------------------------------
 typedef struct { const char *label; int page; } MenuItem;
-static const MenuItem INDEX_ITEMS[] = { {"Favourites", 101}, {"Channels by genre", 200}, {"All channels", 250},
-                                        {"My channels", 260}, {"Guide", 300}, {"Search", 400}, {"Settings", 900} };
-#define NINDEX 7
-#define NSETTINGS 15
+static const MenuItem INDEX_ITEMS[] = { {"Favourites", 101}, {"Most watched", 102}, {"Recently watched", 103},
+                                        {"Channels by genre", 200}, {"All channels", 250}, {"My channels", 260},
+                                        {"Guide", 300}, {"Search", 400}, {"Settings", 900} };
+#define NINDEX 9
+static int index_of(int page) { for (int i = 0; i < NINDEX; i++) if (INDEX_ITEMS[i].page == page) return i; return 0; }
+#define NSETTINGS 16
 static void setting_row(int i, Row *r) {
   memset(r, 0, sizeof *r);
   switch (i) {
@@ -149,7 +164,8 @@ static void setting_row(int i, Row *r) {
     case 11: snprintf(r->text, sizeof r->text, "Tuning screen"); snprintf(r->detail, sizeof r->detail, "%s", set.plain_tuning ? "Plain" : "Snow + picture"); break;
     case 12: snprintf(r->text, sizeof r->text, "My channels order"); snprintf(r->detail, sizeof r->detail, "%s", set.mine_az ? "A-Z" : "Playlist"); break;
     case 13: snprintf(r->text, sizeof r->text, "Free channels"); snprintf(r->detail, sizeof r->detail, "%s", set.free_off ? "OFF (only your playlists)" : "ON"); break;
-    case 14: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
+    case 14: snprintf(r->text, sizeof r->text, "Suggest favourites"); snprintf(r->detail, sizeof r->detail, "%s", set.suggest_favs ? "ON" : "OFF"); break;
+    case 15: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
   }
 }
 
@@ -183,7 +199,8 @@ static void fill_page(void) {
       for (int i = 0; i < NINDEX; i++) {
         Row *r = &p->rows[p->nrows++]; memset(r, 0, sizeof *r);
         r->number = INDEX_ITEMS[i].page; snprintf(r->text, sizeof r->text, "%s", INDEX_ITEMS[i].label);
-        int n = i == 0 ? count_where(f_fav, 0) : i == 2 ? count_where(f_all, 0) : i == 3 ? count_where(f_mine, 0) : -1;
+        int pg = INDEX_ITEMS[i].page;
+        int n = pg == 101 ? count_where(f_fav, 0) : pg == 250 ? count_where(f_all, 0) : pg == 260 ? count_where(f_mine, 0) : -1;
         if (n >= 0) snprintf(r->detail, sizeof r->detail, "%d", n);
       }
       p->hints[0] = "A Open"; p->hints[1] = "MENU Quit"; p->hints[2] = "L2/R2 Theme";
@@ -199,8 +216,8 @@ static void fill_page(void) {
       p->hints[0] = "A Open"; p->hints[1] = "B Back";
       break;
     case SCR_LIST: case SCR_GUIDE: {
-      static const char *names[] = { "Favourites", "", "All channels", "Guide", "My channels", "Search" };
-      static const int pages[] = { 101, 0, 250, 300, 260, 401 };
+      static const char *names[] = { "Favourites", "", "All channels", "Guide", "My channels", "Search", "Most watched", "Recently watched" };
+      static const int pages[] = { 101, 0, 250, 300, 260, 401, 102, 103 };
       p->kind = screen == SCR_GUIDE ? PAGE_GUIDE : PAGE_LIST;
       p->page_no = list_kind == LIST_GENRE ? 201 + list_genre : pages[list_kind];
       if (list_kind == LIST_SEARCH) snprintf(p->title, sizeof p->title, "Search: %s", query);
@@ -212,9 +229,11 @@ static void fill_page(void) {
         r->number = i + 1; snprintf(r->text, sizeof r->text, "%s", view[i]->name); r->fav = is_fav(view[i]->key);
         const Programme *cur, *next; now_next(view[i], now, &cur, &next);
         if (cur) snprintf(r->detail, sizeof r->detail, "%s", cur->title);
+        if (list_kind == LIST_MOST) { int m = (int)(watch_score(view[i]->key) / 60); snprintf(r->detail, sizeof r->detail, "%dh %02dm", m / 60, m % 60); }
         if (screen == SCR_LIST && i >= top && i < top + theme()->list_rows) r->logo = logo_get(view[i]->logo);
       }
       if (!nview) snprintf(p->help, sizeof p->help, "%s", list_kind == LIST_FAVS ? "No favourites yet: press Y on a channel." :
+                           list_kind == LIST_MOST || list_kind == LIST_RECENT ? "Channels you watch show up here by themselves." :
                            list_kind == LIST_MINE ? (sources_warning[0] ? sources_warning : "Add playlists to playlists.txt in Tuner.pak") : "Nothing here.");
       snprintf(p->status, sizeof p->status, "%d/%d", nview ? cursor + 1 : 0, nview);
       p->hints[0] = "A Watch"; p->hints[1] = "B Back"; p->hints[2] = "Y Fav"; p->hints[3] = screen == SCR_GUIDE ? "" : "X Hide";
@@ -290,17 +309,31 @@ static void fill_page(void) {
 }
 
 // --- watching --------------------------------------------------------------------------------------------------------
+// Watching time for Most watched / Recently watched: counted while the picture plays; a viewing counts from 30 s.
+static Channel *session_ch; static Uint32 session_ms;
+static void watch_commit(int final) {
+  if (!session_ch || (final && session_ms < 30000) || (!final && session_ms < 300000)) { if (final) { session_ch = NULL; session_ms = 0; } return; }
+  watch_add(session_ch->key, session_ms / 1000.0);
+  if (set.suggest_favs && !is_fav(session_ch->key) && !was_suggested(session_ch->key) && watch_score(session_ch->key) > 7200) {
+    mark_suggested(session_ch->key); snprintf(toast, sizeof toast, "WATCH THIS A LOT? Y = FAVOURITE"); toast_until = SDL_GetTicks() + 6000;
+  }
+  session_ms = 0;
+  if (final) session_ch = NULL;
+}
+
 static void tune_view(int i) {
   if (!nview) return;
   int next = (i + nview) % nview;
   if (screen == SCR_WATCH && next != watch_index) prev_index = watch_index;
   watch_index = next;
+  watch_commit(1);
   if (strcmp(set.last_channel, view[watch_index]->key)) { snprintf(set.last_channel, sizeof set.last_channel, "%s", view[watch_index]->key); settings_save(&set); }
   tv_tune(view[watch_index]);
   banner_until = SDL_GetTicks() + 6000;
 }
 static void watch(int i) { back_from_watch = screen; prev_index = -1; tune_view(i); screen = SCR_WATCH; }
 static void leave_watch(void) {
+  watch_commit(1);
   screen = back_from_watch;
   if (!theme()->live_menus) tv_tune(NULL);   // themes that cover the screen stop the channel in the menus
   build_view(); sort_mine();
@@ -341,17 +374,19 @@ static void on_button(int b) {
     case SCR_INDEX:
       if (step) cursor = (cursor + step + NINDEX) % NINDEX;
       if (b == BTN_A) {
-        int c = cursor; cursor = top = 0;
-        if (c == 0) open_list(LIST_FAVS, 0, SCR_LIST);
-        else if (c == 1) screen = SCR_GENRES;
-        else if (c == 2) open_list(LIST_ALL, 0, SCR_LIST);
-        else if (c == 3) {
+        int pg = INDEX_ITEMS[cursor].page; cursor = top = 0;
+        if (pg == 101) open_list(LIST_FAVS, 0, SCR_LIST);
+        else if (pg == 102) open_list(LIST_MOST, 0, SCR_LIST);
+        else if (pg == 103) open_list(LIST_RECENT, 0, SCR_LIST);
+        else if (pg == 200) screen = SCR_GENRES;
+        else if (pg == 250) open_list(LIST_ALL, 0, SCR_LIST);
+        else if (pg == 260) {
           collect_my_groups();
           if (n_my_groups > 1) { screen = SCR_MYGROUPS; cursor = top = 0; }
           else { mine_group_all = 1; open_list(LIST_MINE, 0, SCR_LIST); }
         }
-        else if (c == 4) open_list(LIST_NOW, 0, SCR_GUIDE);
-        else if (c == 5) { screen = SCR_SEARCH; cursor = 0; }
+        else if (pg == 300) open_list(LIST_NOW, 0, SCR_GUIDE);
+        else if (pg == 400) { screen = SCR_SEARCH; cursor = 0; }
         else screen = SCR_SETTINGS;
       }
       break;
@@ -364,7 +399,7 @@ static void on_button(int b) {
         if (locked_row && cursor == n - 1) ask_pin(0, SCR_GENRES);
         else { int r = 0; for (int g = 0; g < G_COUNT; g++) if (count_where(f_genre, g)) { if (r == cursor) { open_list(LIST_GENRE, g, SCR_LIST); break; } r++; } }
       }
-      if (b == BTN_B) { screen = SCR_INDEX; cursor = 1; top = 0; }
+      if (b == BTN_B) { screen = SCR_INDEX; cursor = index_of(200); top = 0; }
       break;
     }
     case SCR_LIST: case SCR_GUIDE:
@@ -377,12 +412,15 @@ static void on_button(int b) {
         if (list_kind == LIST_GENRE) { screen = SCR_GENRES; cursor = top = 0; }
         else if (list_kind == LIST_SEARCH) { screen = SCR_SEARCH; cursor = NKEYS - 1; top = 0; }
         else if (list_kind == LIST_MINE && n_my_groups > 1) { screen = SCR_MYGROUPS; cursor = mine_back_cursor; top = 0; keep_visible(n_my_groups + 1); }
-        else { screen = SCR_INDEX; cursor = list_kind == LIST_FAVS ? 0 : list_kind == LIST_ALL ? 2 : list_kind == LIST_MINE ? 3 : 4; top = 0; }
+        else {
+          static const int back_page[] = { 101, 200, 250, 300, 260, 400, 102, 103 };
+          screen = SCR_INDEX; cursor = index_of(back_page[list_kind]); top = 0;
+        }
       }
       break;
     case SCR_SETTINGS:
       if (step) cursor = (cursor + step + NSETTINGS) % NSETTINGS;
-      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 0 || cursor == 6 || cursor == 11 || cursor == 12 || cursor == 13))) {
+      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 0 || cursor == 6 || cursor == 11 || cursor == 12 || cursor == 13 || cursor == 14))) {
         int dir = b == BTN_LEFT ? -1 : 1;
         if (cursor == 0) step_theme(dir);
         else if (cursor <= 3) { edit_kind = (EditKind)(cursor - 1); screen = SCR_EDIT; cursor = top = 0; }
@@ -400,10 +438,11 @@ static void on_button(int b) {
         else if (cursor == 11) { set.plain_tuning = !set.plain_tuning; settings_save(&set); }
         else if (cursor == 12) { set.mine_az = !set.mine_az; settings_save(&set); }
         else if (cursor == 13) { set.free_off = !set.free_off; settings_save(&set); dirty_sources = 1; }
-        else if (cursor == 14) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
+        else if (cursor == 14) { set.suggest_favs = !set.suggest_favs; settings_save(&set); }
+        else if (cursor == 15) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
       }
       if (b == BTN_X && cursor == 10 && set.pin[0]) { set.pin[0] = 0; settings_save(&set); say("PIN REMOVED"); }
-      if (b == BTN_B) { screen = SCR_INDEX; cursor = 6; top = 0; if (dirty_sources) { dirty_sources = 0; start_loading(0); } }
+      if (b == BTN_B) { screen = SCR_INDEX; cursor = index_of(900); top = 0; if (dirty_sources) { dirty_sources = 0; start_loading(0); } }
       break;
     case SCR_SETUP:
       if (setup_step == 0) {
@@ -435,7 +474,7 @@ static void on_button(int b) {
         if (cursor > 0) snprintf(mine_group, sizeof mine_group, "%s", my_groups[cursor - 1]);
         int back = cursor; open_list(LIST_MINE, 0, SCR_LIST); mine_back_cursor = back;
       }
-      if (b == BTN_B) { screen = SCR_INDEX; cursor = 3; top = 0; }
+      if (b == BTN_B) { screen = SCR_INDEX; cursor = index_of(260); top = 0; }
       break;
     case SCR_PIN:
       if (b == BTN_UP || b == BTN_DOWN) pin_digits[pin_pos] = (pin_digits[pin_pos] + (b == BTN_UP ? 1 : 9)) % 10;
@@ -459,7 +498,7 @@ static void on_button(int b) {
           query[n] = chars[cursor]; query[n + 1] = 0;
         }
       }
-      if (b == BTN_B) { screen = SCR_INDEX; cursor = 5; top = 0; }
+      if (b == BTN_B) { screen = SCR_INDEX; cursor = index_of(400); top = 0; }
       break;
     case SCR_LOADING: break;
   }
@@ -621,6 +660,13 @@ int main(int argc, char **argv) {
     if (guide_arrived) { guide_arrived = 0; say("TV GUIDE UPDATED (USED NEXT START)"); }
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
     if (tv_state() != TV_OFF) tv_render();
+    static Uint32 last_frame; Uint32 now_f = SDL_GetTicks();
+    if (screen == SCR_WATCH && tv_state() == TV_PLAYING && nview) {
+      if (session_ch != view[watch_index]) { session_ch = view[watch_index]; session_ms = 0; }
+      if (last_frame && now_f - last_frame < 1000) session_ms += now_f - last_frame;
+      watch_commit(0);   // long sessions are saved every 5 minutes
+    }
+    last_frame = now_f;
     if (screen == SCR_WATCH) {
       int plain_loading = set.plain_tuning && tv_state() == TV_TUNING;
       if ((plain_loading || SDL_GetTicks() < banner_until) && nview) theme()->banner(view[watch_index], watch_index + 1);
@@ -633,6 +679,7 @@ int main(int argc, char **argv) {
     if (SDL_GetTicks() < toast_until) theme()->toast(toast, 0);
     SDL_RenderPresent(ren);
   }
+  watch_commit(1);
   if (!shots_dir) power_off();
   tv_tune(NULL);
   SDL_Quit();
