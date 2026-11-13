@@ -62,6 +62,19 @@ background once a day (guides every few hours) and kept on the card, so Tuner al
 
 In the CRT TV and Cable guide looks, resting on a channel in a list tunes it in behind the menu.
 
+## Most watched and Recently watched
+
+Tuner keeps track of what you watch, so the channels you like end up on the front page without starring them:
+
+- **Most watched** lists your top 20 channels by watching time. Only real watching counts: the picture has to be
+  playing and you have to stay at least 30 seconds, so zapping past doesn't count. Time fades (it halves every two
+  weeks), so channels you stop watching slide down by themselves.
+- **Recently watched** lists the last 10 channels you watched, newest first.
+- **Settings > Suggest favourites** (off by default): after about two hours on a channel that isn't a favourite,
+  Tuner suggests starring it, once per channel.
+
+This is kept on the SD card next to your favourites (`watched.txt`, `recent.txt`) and never leaves the device.
+
 ## Your own channels
 
 Copy `playlists.example.txt` to `playlists.txt` in the pak folder and add one playlist per line: an M3U URL, an M3U
