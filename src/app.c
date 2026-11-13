@@ -109,7 +109,7 @@ typedef struct { const char *label; int page; } MenuItem;
 static const MenuItem INDEX_ITEMS[] = { {"Favourites", 101}, {"Channels by genre", 200}, {"All channels", 250},
                                         {"My channels", 260}, {"Guide", 300}, {"Search", 400}, {"Settings", 900} };
 #define NINDEX 7
-#define NSETTINGS 12
+#define NSETTINGS 13
 static void setting_row(int i, Row *r) {
   memset(r, 0, sizeof *r);
   switch (i) {
@@ -124,7 +124,8 @@ static void setting_row(int i, Row *r) {
     case 8: snprintf(r->text, sizeof r->text, "Show hidden channels again"); break;
     case 9: snprintf(r->text, sizeof r->text, "Sleep timer"); if (sleep_at) snprintf(r->detail, sizeof r->detail, "%d min (%d left)", sleep_min, (int)((sleep_at - SDL_GetTicks()) / 60000) + 1); else snprintf(r->detail, sizeof r->detail, "OFF"); break;
     case 10: snprintf(r->text, sizeof r->text, "Adult PIN"); snprintf(r->detail, sizeof r->detail, "%s", set.pin[0] ? "SET (A: change, X: remove)" : "none"); break;
-    case 11: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
+    case 11: snprintf(r->text, sizeof r->text, "Tuning screen"); snprintf(r->detail, sizeof r->detail, "%s", set.plain_tuning ? "Plain" : "Snow + picture"); break;
+    case 12: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
   }
 }
 
@@ -327,7 +328,7 @@ static void on_button(int b) {
       break;
     case SCR_SETTINGS:
       if (step) cursor = (cursor + step + NSETTINGS) % NSETTINGS;
-      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 0 || cursor == 6))) {
+      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 0 || cursor == 6 || cursor == 11))) {
         int dir = b == BTN_LEFT ? -1 : 1;
         if (cursor == 0) step_theme(dir);
         else if (cursor <= 3) { edit_kind = (EditKind)(cursor - 1); screen = SCR_EDIT; cursor = top = 0; }
@@ -342,7 +343,8 @@ static void on_button(int b) {
           sleep_min = steps[(k + 1) % 5]; sleep_at = sleep_min ? SDL_GetTicks() + sleep_min * 60000u : 0; sleep_warned = 0;
         }
         else if (cursor == 10) ask_pin(1, SCR_SETTINGS);
-        else if (cursor == 11) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
+        else if (cursor == 11) { set.plain_tuning = !set.plain_tuning; settings_save(&set); }
+        else if (cursor == 12) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
       }
       if (b == BTN_X && cursor == 10 && set.pin[0]) { set.pin[0] = 0; settings_save(&set); say("PIN REMOVED"); }
       if (b == BTN_B) { screen = SCR_INDEX; cursor = 6; top = 0; if (dirty_sources) { dirty_sources = 0; start_loading(0); } }
@@ -522,7 +524,12 @@ int main(int argc, char **argv) {
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
     if (tv_state() != TV_OFF) tv_render();
     if (screen == SCR_WATCH) {
-      if (SDL_GetTicks() < banner_until && nview) theme()->banner(view[watch_index], watch_index + 1);
+      int plain_loading = set.plain_tuning && tv_state() == TV_TUNING;
+      if ((plain_loading || SDL_GetTicks() < banner_until) && nview) theme()->banner(view[watch_index], watch_index + 1);
+      if (plain_loading) {   // plain tuning screen: the channel info stays up with LOADING, in the theme's style
+        static const char *dots[] = { "LOADING", "LOADING.", "LOADING..", "LOADING..." };
+        theme()->toast(dots[(SDL_GetTicks() / 400) % 4], 1);
+      }
       if (show_osd) { char l[96]; tv_osd_line(l, sizeof l); tt_draw(12, 12, 20, l, TT_PALETTE[TT_GREEN]); }
     } else { fill_page(); theme()->page(&page); }
     if (SDL_GetTicks() < toast_until) theme()->toast(toast, 0);

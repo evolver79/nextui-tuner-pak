@@ -12,8 +12,9 @@ pick, shows what's on, and plays them with the snow, test cards and channel numb
   - **Teletext**: pages, page numbers and coloured fastext labels.
   - **VCR**: the video recorder's blue screen.
   - **Cable guide**: listings on a purple panel under the live picture.
-- **Tuning in:** snow over the programme's picture while a channel connects, a test card on long waits, and a
-  plain-words message when a channel can't be played.
+- **Tuning in:** snow over the programme's picture while a channel connects and a test card on long waits (or, if
+  you prefer, a plain screen with the channel info and LOADING), and a plain-words message when a channel can't be
+  played.
 - Favourites, search, channel logos, scanline and CRT picture overlays, a sleep timer, an adult PIN. Tuner starts on
   the channel you watched last.
 

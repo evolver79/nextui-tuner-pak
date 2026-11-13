@@ -433,8 +433,10 @@ void tv_render(void) {
     const char *hint = "Up/down: another channel";
     tt_draw((SCREEN_W - tt_text_width(22, hint)) / 2, SCREEN_H / 2 + 90, 22, hint, TT_PALETTE[TT_CYAN]);
   } else if (!s->connected || !playing) {
-    draw_tuning(ren, itex, iw, ih, snow, SDL_GetTicks() - changed_at);
-    if (!s->audio_started) { SDL_PauseAudioDevice(audio, 0); snow_audio(audio); }
+    if (!set->plain_tuning) {   // plain: a black screen; the app draws the channel info and LOADING over it
+      draw_tuning(ren, itex, iw, ih, snow, SDL_GetTicks() - changed_at);
+      if (!s->audio_started) { SDL_PauseAudioDevice(audio, 0); snow_audio(audio); }
+    }
     if (retries) {   // reconnecting: say so over the snow
       char m[48]; snprintf(m, sizeof m, "SIGNAL LOST - RETRYING (%d/3)", retries);
       tt_draw((SCREEN_W - tt_text_width(28, m)) / 2, 40, 28, m, TT_PALETTE[TT_YELLOW]);

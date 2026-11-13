@@ -10,6 +10,7 @@ typedef struct {
   int max_height;        // 480 / 720 / 1080: skip iptv-org streams above it
   int overlay;
   int theme;
+  int plain_tuning;      // 1: no snow/picture/hiss while a channel loads, just the channel info and LOADING
   char pin[5];           // adult PIN, "" = none
   char last_channel[64]; // key of the channel watched last (Tuner starts on it)
   int setup_done;
