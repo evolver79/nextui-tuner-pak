@@ -42,7 +42,8 @@ live channel plays there instead.
 **By hand:** download `Tuner.pak.zip` from [Releases](../../releases) and unzip it into a new folder on the SD card,
 `Tools/tg5040/Tuner.pak/`.
 
-The first start asks for languages, countries and genres, then fetches the channel lists. They're refreshed in the
+The first start asks whether you want the free channels or only your own playlists, then (for the free channels)
+languages, countries and genres, and fetches the channel lists. They're refreshed in the
 background once a day (guides every few hours) and kept on the card, so Tuner also starts without Wi-Fi.
 
 ## Controls
@@ -65,7 +66,9 @@ In the CRT TV and Cable guide looks, resting on a channel in a list tunes it in 
 
 Copy `playlists.example.txt` to `playlists.txt` in the pak folder and add one playlist per line: an M3U URL, an M3U
 file in the pak folder, or `epg <url or file>` for an XMLTV guide. Your channels appear under **My channels** and
-are never hidden by the genre or quality settings. Settings > Refresh channels now reloads them.
+are never hidden by the genre or quality settings. They're browsed by the playlist's own groups, in playlist order
+(or A-Z, in Settings). Settings > Free channels OFF uses only your playlists. Settings > Refresh channels now reloads
+them.
 
 Settings, favourites and the cache live in `.userdata/tg5040/Tuner/` on the SD card.
 

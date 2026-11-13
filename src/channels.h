@@ -24,6 +24,8 @@ typedef struct {
   char source[16];      // "pluto", "samsung", "iptv-org", "custom"
   char country[4];
   int genre;
+  char group[64];       // the playlist's own group-title (your playlists are browsed by it)
+  int order;            // position in its playlist (playlist order for your channels)
   int height;           // stream height if known (iptv-org names say "(720p)"), else 0
   Programme *progs; int nprogs;   // sorted by start
 } Channel;

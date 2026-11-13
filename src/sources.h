@@ -8,6 +8,8 @@ typedef void (*ProgressFn)(const char *msg, void *ud);
 // chosen languages and countries, then the custom playlists/guides. Deduplicated by stream URL, filtered by genre,
 // adult and quality, sorted by genre then name. force = ignore the caches' age.
 void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb, void *ud);
+// After sources_build: a note about your playlists that failed ("" when all went fine).
+extern char sources_warning[160];
 
 typedef struct { const char *code, *name; } Choice;
 extern const Choice LANGUAGES[]; extern const int NLANGUAGES;

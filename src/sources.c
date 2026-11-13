@@ -28,6 +28,8 @@ const int NCOUNTRIES = sizeof COUNTRIES / sizeof COUNTRIES[0];
 static const char *PLUTO_REGIONS = "us,gb,es,ca,de,br,mx,cl,fr,it,no,se,dk,ar";
 static const char *SAMSUNG_REGIONS = "at,ca,ch,de,es,fr,gb,in,it,kr,us";
 
+char sources_warning[160];
+
 static int in_csv(const char *csv, const char *item) {
   size_t n = strlen(item);
   for (const char *p = csv; (p = strstr(p, item)); p += n)
@@ -162,10 +164,11 @@ static int cmp_channel(const void *a, const void *b) {
 void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb, void *ud) {
   ChannelList all = {0};
   long guide_age = force ? 0 : 6 * 3600, list_age = force ? 0 : 24 * 3600;
+  char tmp[256], url[256], name[64], msg[96];
+  if (!s->free_off) {
   add_mjh("PlutoTV", PLUTO_REGIONS, s->countries, "https://jmp2.uk/plu-%s.m3u8", NULL, "pluto", "plu", &all, guide_age, cb, ud);
   add_mjh("SamsungTVPlus", SAMSUNG_REGIONS, s->countries, "https://jmp2.uk/stvp-%s", "okhttp/4.12.0", "samsung", "stvp", &all, guide_age, cb, ud);
 
-  char tmp[256], url[256], name[64], msg[96];
   snprintf(tmp, sizeof tmp, "%s", s->languages);
   for (char *t = strtok(tmp, ","); t; t = strtok(NULL, ",")) {
     snprintf(msg, sizeof msg, "Fetching iptv-org: %s...", t); cb(msg, ud);
@@ -183,8 +186,6 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
   }
 
 
-  fill_mjh_guides("PlutoTV", "pluto.json", "jmp2.uk/plu-", &all, guide_age, cb, ud);
-  fill_mjh_guides("SamsungTVPlus", "samsung.json", "jmp2.uk/stvp-", &all, guide_age, cb, ud);
 
   // Guides for national channels from epgshare01 (one XMLTV per country, its own channel ids): matched by name to
   // the iptv-org channels that have no guide yet.
@@ -205,6 +206,8 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     for (int i = 0; i < all.n; i++) if (!strcmp(all.v[i].source, "iptv")) { if (first < 0) first = i; last = i; }
     if (first >= 0) { int got = load_xmltv(p, all.v + first, last - first + 1, 1); fprintf(stderr, "epgshare %s: %d programmes\n", EPGSHARE[e].file, got); }
   }
+
+  }   // free sources
 
   // Your own playlists and guides: playlists.txt in the pak folder (one per line: an M3U URL or file name, "epg <url
   // or file>" for an XMLTV guide, # for comments), plus custom_m3u=/custom_xmltv= in settings.ini.
@@ -228,11 +231,15 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     }
     fclose(pf);
   }
-  int k = 0;
+  int k = 0, failed = 0;
+  sources_warning[0] = 0;
   char *save = NULL;
   for (char *t = strtok_r(lists, " ", &save); t; t = strtok_r(NULL, " ", &save), k++) {
     cb("Fetching your playlists...", ud);
-    if (!strncmp(t, "http", 4)) { snprintf(name, sizeof name, "custom-%d.m3u", k); add_m3u_url(t, name, "custom", &all, list_age); }
+    if (!strncmp(t, "http", 4)) {
+      snprintf(name, sizeof name, "custom-%d.m3u", k);
+      if (!add_m3u_url(t, name, "custom", &all, list_age)) { failed++; fprintf(stderr, "playlist %d: no channels (download failed or not an M3U)\n", k + 1); }
+    }
     else {
       char p[1200]; snprintf(p, sizeof p, t[0] == '/' ? "%s" : "%s/%s", t[0] == '/' ? t : s->pak_dir, t);
       FILE *f = fopen(p, "rb");
@@ -241,9 +248,10 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
         char *text = malloc(n + 1);
         if (fread(text, 1, n, f) == (size_t)n) { text[n] = 0; parse_m3u(text, &all, "custom"); }
         free(text); fclose(f);
-      } else fprintf(stderr, "playlist not found: %s\n", p);
+      } else { failed++; fprintf(stderr, "playlist not found: %s\n", p); }
     }
   }
+  if (failed) snprintf(sources_warning, sizeof sources_warning, "%d of your playlists gave no channels (download failed?)", failed);
   k = 0; save = NULL;
   for (char *t = strtok_r(guides, " ", &save); t; t = strtok_r(NULL, " ", &save), k++) {
     cb("Fetching your guides...", ud);
@@ -254,22 +262,36 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     } else snprintf(p, sizeof p, t[0] == '/' ? "%s" : "%s/%s", t[0] == '/' ? t : s->pak_dir, t);
     load_xmltv(p, all.v + first_custom, all.n - first_custom, 0);
   }
+  // Pluto/Samsung channels in other lists (iptv-org, your playlists) get the services' guides by their id.
+  fill_mjh_guides("PlutoTV", "pluto.json", "jmp2.uk/plu-", &all, guide_age, cb, ud);
+  fill_mjh_guides("SamsungTVPlus", "samsung.json", "jmp2.uk/stvp-", &all, guide_age, cb, ud);
+
   // Your channels are never filtered by genre or quality (you asked for them), only deduplicated.
   for (int i = first_custom; i < all.n; i++) all.v[i].height = 0;
 
   // Keep: allowed genre, adult only if asked, quality within the cap, and the first stream for each URL.
   cb("Sorting channels...", ud);
+  // A hash set of the URLs kept so far, so big playlists deduplicate quickly.
+  size_t hcap = 1; while (hcap < (size_t)all.n * 2 + 16) hcap <<= 1;
+  const char **seen = calloc(hcap, sizeof *seen);
+  // Your channels go first, so a stream that is both in your playlist and in another list stays yours.
+  for (int pass = 0; pass < 2; pass++)
   for (int i = 0; i < all.n; i++) {
     Channel *c = &all.v[i];
     int mine = !strcmp(c->source, "custom");
+    if (mine != (pass == 0)) continue;
     int ok = mine || (s->genres & (1u << c->genre)) || (c->genre == G_ADULT && s->adult);
     if (c->genre == G_ADULT && !s->adult && !mine) ok = 0;
     if (c->height > s->max_height) ok = 0;
-    for (int j = 0; ok && j < out->n; j++) if (!strcmp(out->v[j].url, c->url)) ok = 0;
+    size_t h = 5381; for (const char *q = c->url; *q; q++) h = h * 33 + (unsigned char)*q;
+    size_t slot = h & (hcap - 1);
+    while (ok && seen[slot]) { if (!strcmp(seen[slot], c->url)) ok = 0; else slot = (slot + 1) & (hcap - 1); }
+    if (ok) seen[slot] = c->url;
     if (ok) { Channel *d = channel_add(out); *d = *c; c->progs = NULL; }
     else free(c->progs);
     c->progs = NULL;
   }
+  free(seen);
   free(all.v);
   qsort(out->v, out->n, sizeof *out->v, cmp_channel);
   snprintf(msg, sizeof msg, "%d channels", out->n); cb(msg, ud);

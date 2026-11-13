@@ -93,6 +93,7 @@ int parse_m3u(const char *text, ChannelList *l, const char *source) {
       char *cut = strstr(cur.name, " ("); if (cut) *cut = 0;
       cut = strstr(cur.name, " ["); if (cut) *cut = 0;
       cur.genre = group[0] ? genre_of(group) : G_GENERAL;
+      snprintf(cur.group, sizeof cur.group, "%s", group);
     } else if (!strncmp(line, "#EXTVLCOPT:http-user-agent=", 27)) {
       snprintf(cur.user_agent, sizeof cur.user_agent, "%s", line + 27);
     } else if (line[0] && line[0] != '#' && cur.name[0]) {
@@ -101,6 +102,8 @@ int parse_m3u(const char *text, ChannelList *l, const char *source) {
       snprintf(c->url, sizeof c->url, "%s", line);
       snprintf(c->source, sizeof c->source, "%s", source);
       snprintf(c->key, sizeof c->key, "%s:%lx", source, hash_str(line));
+      static int order = 0;
+      c->order = order++;
       memset(&cur, 0, sizeof cur);
       added++;
     }

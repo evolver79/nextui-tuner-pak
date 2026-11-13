@@ -24,7 +24,7 @@ enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X =
        BTN_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT, BTN_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
        BTN_L2 = 100, BTN_R2 = 101 };   // the inner triggers are axes; turned into presses below
 
-typedef enum { SCR_SETUP, SCR_LOADING, SCR_INDEX, SCR_GENRES, SCR_LIST, SCR_GUIDE, SCR_SETTINGS, SCR_EDIT, SCR_WATCH, SCR_PIN, SCR_SEARCH } Screen;
+typedef enum { SCR_SETUP, SCR_LOADING, SCR_INDEX, SCR_GENRES, SCR_LIST, SCR_GUIDE, SCR_SETTINGS, SCR_EDIT, SCR_WATCH, SCR_PIN, SCR_SEARCH, SCR_MYGROUPS } Screen;
 typedef enum { LIST_FAVS, LIST_GENRE, LIST_ALL, LIST_NOW, LIST_MINE, LIST_SEARCH } ListKind;
 typedef enum { EDIT_LANG, EDIT_COUNTRY, EDIT_GENRE } EditKind;
 
@@ -46,6 +46,8 @@ static Uint32 sleep_at; static int sleep_min, sleep_warned;
 static int pin_unlocked, pin_setting, pin_digits[4], pin_pos;   // adult PIN: entering to set (pin_setting) or to unlock
 static Screen pin_return;
 static char query[48];                             // search text
+static char mine_group[64]; static int mine_group_all = 1, mine_back_cursor;   // your channels: the group being browsed
+static char (*my_groups)[64]; static int *my_group_n, n_my_groups;   // your playlists' groups, in playlist order
 static const char *KEYS = "ABCDEFGHIJ|KLMNOPQRST|UVWXYZ0123|456789<SPACE><DEL><OK>";
 #define NKEYS 39
 static const Theme *theme(void) { return THEMES[set.theme % NTHEMES]; }
@@ -89,12 +91,31 @@ static void build_view(void) {
     if (list_kind == LIST_FAVS && !is_fav(c->key)) continue;
     if (list_kind == LIST_GENRE && c->genre != list_genre) continue;
     if (list_kind == LIST_NOW && !c->nprogs) continue;
-    if (list_kind == LIST_MINE && !is_mine(c)) continue;
+    if (list_kind == LIST_MINE && (!is_mine(c) || (!mine_group_all && strcmp(c->group, mine_group)))) continue;
     if (list_kind == LIST_SEARCH && !contains_ci(c->name, query)) continue;
     view[nview++] = c;
   }
 }
-static void open_list(ListKind k, int genre, Screen scr) { list_kind = k; list_genre = genre; build_view(); cursor = top = 0; screen = scr; }
+static int cmp_order(const void *a, const void *b) { return (*(Channel *const *)a)->order - (*(Channel *const *)b)->order; }
+static int cmp_name(const void *a, const void *b) { return strcasecmp((*(Channel *const *)a)->name, (*(Channel *const *)b)->name); }
+static void sort_mine(void) { if (list_kind == LIST_MINE) qsort(view, nview, sizeof *view, set.mine_az ? cmp_name : cmp_order); }
+// Your playlists' groups (group-title), in the order they first appear, with channel counts.
+static void collect_my_groups(void) {
+  free(my_groups); free(my_group_n); my_groups = NULL; my_group_n = NULL; n_my_groups = 0;
+  Channel **mine = malloc((chans.n + 1) * sizeof *mine); int n = 0;
+  for (int i = 0; i < chans.n; i++) if (is_mine(&chans.v[i]) && visible(&chans.v[i])) mine[n++] = &chans.v[i];
+  qsort(mine, n, sizeof *mine, cmp_order);
+  for (int i = 0; i < n; i++) {
+    int g = 0; while (g < n_my_groups && strcmp(my_groups[g], mine[i]->group)) g++;
+    if (g == n_my_groups) {
+      my_groups = realloc(my_groups, (n_my_groups + 1) * sizeof *my_groups); my_group_n = realloc(my_group_n, (n_my_groups + 1) * sizeof *my_group_n);
+      snprintf(my_groups[g], sizeof my_groups[g], "%s", mine[i]->group); my_group_n[g] = 0; n_my_groups++;
+    }
+    my_group_n[g]++;
+  }
+  free(mine);
+}
+static void open_list(ListKind k, int genre, Screen scr) { list_kind = k; list_genre = genre; build_view(); sort_mine(); cursor = top = 0; screen = scr; }
 static void keep_visible(int n) {
   int rows = screen == SCR_GUIDE ? 8 : theme()->list_rows;
   if (cursor >= n) cursor = n - 1;
@@ -109,7 +130,7 @@ typedef struct { const char *label; int page; } MenuItem;
 static const MenuItem INDEX_ITEMS[] = { {"Favourites", 101}, {"Channels by genre", 200}, {"All channels", 250},
                                         {"My channels", 260}, {"Guide", 300}, {"Search", 400}, {"Settings", 900} };
 #define NINDEX 7
-#define NSETTINGS 13
+#define NSETTINGS 15
 static void setting_row(int i, Row *r) {
   memset(r, 0, sizeof *r);
   switch (i) {
@@ -125,7 +146,9 @@ static void setting_row(int i, Row *r) {
     case 9: snprintf(r->text, sizeof r->text, "Sleep timer"); if (sleep_at) snprintf(r->detail, sizeof r->detail, "%d min (%d left)", sleep_min, (int)((sleep_at - SDL_GetTicks()) / 60000) + 1); else snprintf(r->detail, sizeof r->detail, "OFF"); break;
     case 10: snprintf(r->text, sizeof r->text, "Adult PIN"); snprintf(r->detail, sizeof r->detail, "%s", set.pin[0] ? "SET (A: change, X: remove)" : "none"); break;
     case 11: snprintf(r->text, sizeof r->text, "Tuning screen"); snprintf(r->detail, sizeof r->detail, "%s", set.plain_tuning ? "Plain" : "Snow + picture"); break;
-    case 12: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
+    case 12: snprintf(r->text, sizeof r->text, "My channels order"); snprintf(r->detail, sizeof r->detail, "%s", set.mine_az ? "A-Z" : "Playlist"); break;
+    case 13: snprintf(r->text, sizeof r->text, "Free channels"); snprintf(r->detail, sizeof r->detail, "%s", set.free_off ? "OFF (only your playlists)" : "ON"); break;
+    case 14: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
   }
 }
 
@@ -180,6 +203,7 @@ static void fill_page(void) {
       p->kind = screen == SCR_GUIDE ? PAGE_GUIDE : PAGE_LIST;
       p->page_no = list_kind == LIST_GENRE ? 201 + list_genre : pages[list_kind];
       if (list_kind == LIST_SEARCH) snprintf(p->title, sizeof p->title, "Search: %s", query);
+      else if (list_kind == LIST_MINE && !mine_group_all) snprintf(p->title, sizeof p->title, "%s", mine_group[0] ? mine_group : "(no group)");
       else snprintf(p->title, sizeof p->title, "%s", list_kind == LIST_GENRE ? GENRE_NAMES[list_genre] : names[list_kind]);
       p->chs = view; p->nchs = nview;
       for (int i = 0; i < nview && i < 4096; i++) {
@@ -190,7 +214,7 @@ static void fill_page(void) {
         if (screen == SCR_LIST && i >= top && i < top + theme()->list_rows) r->logo = logo_get(view[i]->logo);
       }
       if (!nview) snprintf(p->help, sizeof p->help, "%s", list_kind == LIST_FAVS ? "No favourites yet: press Y on a channel." :
-                           list_kind == LIST_MINE ? "Add playlists to playlists.txt in Tuner.pak" : "Nothing here.");
+                           list_kind == LIST_MINE ? (sources_warning[0] ? sources_warning : "Add playlists to playlists.txt in Tuner.pak") : "Nothing here.");
       snprintf(p->status, sizeof p->status, "%d/%d", nview ? cursor + 1 : 0, nview);
       p->hints[0] = "A Watch"; p->hints[1] = "B Back"; p->hints[2] = "Y Fav"; p->hints[3] = screen == SCR_GUIDE ? "" : "X Hide";
       break;
@@ -200,12 +224,24 @@ static void fill_page(void) {
       for (int i = 0; i < NSETTINGS; i++) setting_row(i, &p->rows[p->nrows++]);
       p->hints[0] = "A Change"; p->hints[1] = "B Back";
       break;
-    case SCR_EDIT: case SCR_SETUP: {
+    case SCR_SETUP:
+      if (setup_step == 0) {   // first question: free channels too, or only your own playlists?
+        p->kind = PAGE_MENU; p->page_no = 800; snprintf(p->title, sizeof p->title, "Setup: Which channels?");
+        snprintf(p->help, sizeof p->help, "Your own playlists go in playlists.txt in Tuner.pak");
+        Row *r = &p->rows[p->nrows++]; memset(r, 0, sizeof *r); snprintf(r->text, sizeof r->text, "Free channels + your playlists");
+        snprintf(r->detail, sizeof r->detail, "Pluto, Samsung, iptv-org");
+        r = &p->rows[p->nrows++]; memset(r, 0, sizeof *r); snprintf(r->text, sizeof r->text, "Only your own playlists");
+        snprintf(r->detail, sizeof r->detail, "playlists.txt");
+        p->hints[0] = "A Choose";
+        break;
+      }
+      /* fall through */
+    case SCR_EDIT: {
       static const char *titles[] = { "Languages", "Countries", "Genres" };
       static const char *help[] = { "Channels in these languages (iptv-org).", "Free TV services and national channels.", "Genres to show. Adult is off unless set." };
       p->kind = PAGE_CHECK;
       p->page_no = screen == SCR_SETUP ? 800 + setup_step : 910 + edit_kind;
-      if (screen == SCR_SETUP) snprintf(p->title, sizeof p->title, "Setup %d/3: %s", setup_step + 1, titles[edit_kind]);
+      if (screen == SCR_SETUP) snprintf(p->title, sizeof p->title, "Setup %d/4: %s", setup_step + 1, titles[edit_kind]);
       else snprintf(p->title, sizeof p->title, "%s", titles[edit_kind]);
       snprintf(p->help, sizeof p->help, "%s", help[edit_kind]);
       for (int i = 0; i < edit_count(); i++) {
@@ -222,6 +258,18 @@ static void fill_page(void) {
       p->kind = PAGE_LOADING; p->page_no = 199; snprintf(p->title, sizeof p->title, "Tuning in");
       SDL_LockMutex(load_lock); snprintf(p->status, sizeof p->status, "%s", load_msg); SDL_UnlockMutex(load_lock);
       break;
+    case SCR_MYGROUPS: {
+      p->kind = PAGE_MENU; p->page_no = 260; snprintf(p->title, sizeof p->title, "My channels");
+      int total = 0; for (int g = 0; g < n_my_groups; g++) total += my_group_n[g];
+      Row *r = &p->rows[p->nrows++]; memset(r, 0, sizeof *r);
+      snprintf(r->text, sizeof r->text, "All my channels"); snprintf(r->detail, sizeof r->detail, "%d", total);
+      for (int g = 0; g < n_my_groups && p->nrows < 4096; g++) {
+        r = &p->rows[p->nrows++]; memset(r, 0, sizeof *r);
+        snprintf(r->text, sizeof r->text, "%s", my_groups[g][0] ? my_groups[g] : "(no group)"); snprintf(r->detail, sizeof r->detail, "%d", my_group_n[g]);
+      }
+      p->hints[0] = "A Open"; p->hints[1] = "B Back";
+      break;
+    }
     case SCR_PIN:
       p->kind = PAGE_PIN; p->page_no = 990; p->cursor = pin_pos;
       snprintf(p->title, sizeof p->title, "%s", pin_setting ? "New adult PIN" : "Adult PIN");
@@ -254,7 +302,7 @@ static void watch(int i) { back_from_watch = screen; prev_index = -1; tune_view(
 static void leave_watch(void) {
   screen = back_from_watch;
   if (!theme()->live_menus) tv_tune(NULL);   // themes that cover the screen stop the channel in the menus
-  build_view();
+  build_view(); sort_mine();
   cursor = watch_index < nview ? watch_index : nview - 1; keep_visible(nview);
 }
 
@@ -296,7 +344,11 @@ static void on_button(int b) {
         if (c == 0) open_list(LIST_FAVS, 0, SCR_LIST);
         else if (c == 1) screen = SCR_GENRES;
         else if (c == 2) open_list(LIST_ALL, 0, SCR_LIST);
-        else if (c == 3) open_list(LIST_MINE, 0, SCR_LIST);
+        else if (c == 3) {
+          collect_my_groups();
+          if (n_my_groups > 1) { screen = SCR_MYGROUPS; cursor = top = 0; }
+          else { mine_group_all = 1; open_list(LIST_MINE, 0, SCR_LIST); }
+        }
         else if (c == 4) open_list(LIST_NOW, 0, SCR_GUIDE);
         else if (c == 5) { screen = SCR_SEARCH; cursor = 0; }
         else screen = SCR_SETTINGS;
@@ -319,16 +371,17 @@ static void on_button(int b) {
       if (step || page_step) last_move = SDL_GetTicks();
       if (b == BTN_A) watch(cursor);
       if (b == BTN_Y && nview) { toggle_fav(view[cursor]->key); if (list_kind == LIST_FAVS) { build_view(); keep_visible(nview); } }
-      if (b == BTN_X && nview && screen == SCR_LIST) { toggle_hidden(view[cursor]->key); say("HIDDEN"); build_view(); keep_visible(nview); }
+      if (b == BTN_X && nview && screen == SCR_LIST) { toggle_hidden(view[cursor]->key); say("HIDDEN"); build_view(); sort_mine(); keep_visible(nview); }
       if (b == BTN_B) {
         if (list_kind == LIST_GENRE) { screen = SCR_GENRES; cursor = top = 0; }
         else if (list_kind == LIST_SEARCH) { screen = SCR_SEARCH; cursor = NKEYS - 1; top = 0; }
+        else if (list_kind == LIST_MINE && n_my_groups > 1) { screen = SCR_MYGROUPS; cursor = mine_back_cursor; top = 0; keep_visible(n_my_groups + 1); }
         else { screen = SCR_INDEX; cursor = list_kind == LIST_FAVS ? 0 : list_kind == LIST_ALL ? 2 : list_kind == LIST_MINE ? 3 : 4; top = 0; }
       }
       break;
     case SCR_SETTINGS:
       if (step) cursor = (cursor + step + NSETTINGS) % NSETTINGS;
-      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 0 || cursor == 6 || cursor == 11))) {
+      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 0 || cursor == 6 || cursor == 11 || cursor == 12 || cursor == 13))) {
         int dir = b == BTN_LEFT ? -1 : 1;
         if (cursor == 0) step_theme(dir);
         else if (cursor <= 3) { edit_kind = (EditKind)(cursor - 1); screen = SCR_EDIT; cursor = top = 0; }
@@ -344,22 +397,45 @@ static void on_button(int b) {
         }
         else if (cursor == 10) ask_pin(1, SCR_SETTINGS);
         else if (cursor == 11) { set.plain_tuning = !set.plain_tuning; settings_save(&set); }
-        else if (cursor == 12) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
+        else if (cursor == 12) { set.mine_az = !set.mine_az; settings_save(&set); }
+        else if (cursor == 13) { set.free_off = !set.free_off; settings_save(&set); dirty_sources = 1; }
+        else if (cursor == 14) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
       }
       if (b == BTN_X && cursor == 10 && set.pin[0]) { set.pin[0] = 0; settings_save(&set); say("PIN REMOVED"); }
       if (b == BTN_B) { screen = SCR_INDEX; cursor = 6; top = 0; if (dirty_sources) { dirty_sources = 0; start_loading(0); } }
       break;
-    case SCR_EDIT: case SCR_SETUP: {
+    case SCR_SETUP:
+      if (setup_step == 0) {
+        if (step) cursor = (cursor + step + 2) % 2;
+        if (b == BTN_A) {
+          set.free_off = cursor == 1;
+          if (set.free_off) { set.setup_done = 1; settings_save(&set); start_loading(0); }   // only your playlists: done
+          else { setup_step = 1; edit_kind = EDIT_LANG; cursor = top = 0; }
+        }
+        break;
+      }
+      /* fall through */
+    case SCR_EDIT: {
       int n = edit_count();
       cursor += step + page_step; keep_visible(n);
       if (b == BTN_A) edit_toggle(cursor);
       if (screen == SCR_SETUP && (b == BTN_START || (b == BTN_B && setup_step > 0))) {
         setup_step += b == BTN_START ? 1 : -1; cursor = top = 0;
-        if (setup_step > 2) { set.setup_done = 1; settings_save(&set); start_loading(0); }
-        else edit_kind = (EditKind)setup_step;
+        if (setup_step > 3) { set.setup_done = 1; settings_save(&set); start_loading(0); }
+        else if (setup_step >= 1) edit_kind = (EditKind)(setup_step - 1);
+        else cursor = set.free_off;   // back to the first question
       } else if (screen == SCR_EDIT && b == BTN_B) { settings_save(&set); screen = SCR_SETTINGS; cursor = edit_kind + 1; top = 0; }
       break;
     }
+    case SCR_MYGROUPS:
+      cursor += step + page_step; keep_visible(n_my_groups + 1);
+      if (b == BTN_A) {
+        mine_group_all = cursor == 0;
+        if (cursor > 0) snprintf(mine_group, sizeof mine_group, "%s", my_groups[cursor - 1]);
+        int back = cursor; open_list(LIST_MINE, 0, SCR_LIST); mine_back_cursor = back;
+      }
+      if (b == BTN_B) { screen = SCR_INDEX; cursor = 3; top = 0; }
+      break;
     case SCR_PIN:
       if (b == BTN_UP || b == BTN_DOWN) pin_digits[pin_pos] = (pin_digits[pin_pos] + (b == BTN_UP ? 1 : 9)) % 10;
       if (b == BTN_LEFT && pin_pos > 0) pin_pos--;
@@ -425,12 +501,13 @@ static void save_shot(const char *dir, const char *name) {
   SDL_SaveBMP(s, p); SDL_FreeSurface(s);
 }
 static void shots(const char *dir) {
-  static const Screen scr[] = { SCR_INDEX, SCR_GENRES, SCR_LIST, SCR_GUIDE, SCR_SETTINGS, SCR_SETUP, SCR_SEARCH, SCR_PIN, SCR_WATCH };
-  static const char *nm[] = { "index", "genres", "list", "guide", "settings", "setup", "search", "pin", "banner" };
+  static const Screen scr[] = { SCR_INDEX, SCR_GENRES, SCR_LIST, SCR_GUIDE, SCR_SETTINGS, SCR_SETUP, SCR_SEARCH, SCR_PIN, SCR_WATCH, SCR_MYGROUPS };
+  static const char *nm[] = { "index", "genres", "list", "guide", "settings", "setup", "search", "pin", "banner", "mygroups" };
   for (int t = 0; t < NTHEMES; t++) {
     set.theme = t;
-    for (int k = 0; k < 9; k++) {
-      screen = scr[k]; cursor = top = 0; edit_kind = EDIT_COUNTRY; setup_step = 1; pin_setting = 1; snprintf(query, sizeof query, "NRK");
+    collect_my_groups();
+    for (int k = 0; k < 10; k++) {
+      screen = scr[k]; cursor = top = 0; edit_kind = EDIT_COUNTRY; setup_step = 2; pin_setting = 1; snprintf(query, sizeof query, "NRK");
       if (screen == SCR_LIST || screen == SCR_GUIDE || screen == SCR_WATCH) { list_kind = LIST_ALL; build_view(); cursor = 2; }
       for (int frame = 0; frame < (screen == SCR_LIST ? 90 : 2); frame++) {   // lists: give the logos a moment
         logos_pump();
@@ -473,7 +550,7 @@ int main(int argc, char **argv) {
   tv_setup(ren, audio, &set);
   load_lock = SDL_CreateMutex();
 
-  if (!set.setup_done) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; }
+  if (!set.setup_done) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = 0; }
   else start_loading(0);
 
   int held = -1; Uint32 repeat_at = 0;
