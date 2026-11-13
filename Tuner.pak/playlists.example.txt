@@ -4,6 +4,8 @@
 #   - an M3U playlist URL:            https://example.com/my-channels.m3u
 #   - an M3U file in this folder:     mine.m3u
 #   - a TV guide (XMLTV), with "epg": epg https://example.com/guide.xml.gz
+#   - an Xtream Codes account:        xtream http://server:port username password
+#     (channels, categories and guide through the provider's API; add "m3u8" at the end for HLS streams)
 #
 # Your channels show up under "My channels" (page 260), are never hidden by the genre or quality settings, and get
 # the guide's now/next when the playlist's tvg-id matches the guide's channel ids.
@@ -13,3 +15,4 @@
 # https://iptv-org.github.io/iptv/categories/classic.m3u
 # http://192.168.1.10:8000/iptv.m3u
 # epg http://192.168.1.10:8000/xmltv.xml
+# xtream http://provider.example:8080 myname mypassword

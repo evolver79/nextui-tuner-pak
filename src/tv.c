@@ -376,7 +376,7 @@ void tv_tune(Channel *c) {
   if (!c) { if (video) { SDL_DestroyTexture(video); video = NULL; } return; }
   s = start_stream(c, audio);
   ijob = fetch_image(c);
-  fprintf(stderr, "tune: %s (%s)\n", c->name, c->url);
+  fprintf(stderr, "tune: %s (%s)\n", c->name, c->source);   // not the URL: yours can hold a login
 }
 
 Channel *tv_channel(void) { return cur_ch; }

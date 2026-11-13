@@ -177,7 +177,11 @@ static void crt_page(const Page *p) {
     }
     char nm[200]; snprintf(nm, sizeof nm, "%s%s", r->text, r->fav ? " *" : "");
     int avail = bx + bw - 28 - x;
-    if (r->detail[0] && p->kind != PAGE_CHECK) {
+    if (r->detail[0] && p->kind != PAGE_CHECK && strlen(r->detail) <= 8) {   // a count or a short value: right edge
+      int dw = tt_text_width(28, r->detail);
+      fit(nm, chars_for(avail - dw - 20, 34)); text(x, ry + 4, 34, fg, nm);
+      text(bx + bw - 28 - dw, ry + 8, 28, hl ? CRT_WHITE : CRT_DIM, r->detail);
+    } else if (r->detail[0] && p->kind != PAGE_CHECK) {
       fit(nm, chars_for(avail / 2, 34)); text(x, ry + 4, 34, fg, nm);
       char d[200]; snprintf(d, sizeof d, "%s", r->detail); fit(d, chars_for(avail / 2 - 10, 24));
       text(x + avail / 2 + 10, ry + 10, 24, hl ? CRT_WHITE : CRT_DIM, d);
@@ -240,7 +244,8 @@ static void tx_page(const Page *p) {
     else if (p->kind == PAGE_CHECK) { tt_print(1, row, r->checked ? TT_YELLOW : TT_WHITE, bg, 0, r->checked ? "[X]" : "[ ]"); col = 5; }
     else if (r->number) { tt_printf(1, row, hl ? TT_WHITE : TT_GREEN, bg, 0, "%d", r->number); col = 6; }
     char nm[200]; snprintf(nm, sizeof nm, "%s", r->text);
-    int name_w = r->detail[0] ? (p->kind == PAGE_LIST ? 17 : 14) : TT_COLS - col - 1;
+    int dlen = (int)strlen(r->detail);
+    int name_w = !r->detail[0] ? TT_COLS - col - 1 : dlen <= 8 && p->kind != PAGE_LIST ? TT_COLS - col - dlen - 2 : (p->kind == PAGE_LIST ? 17 : 14);
     fit(nm, name_w);
     tt_print(col, row, hl ? TT_WHITE : (p->kind == PAGE_CHECK && r->checked ? TT_YELLOW : TT_WHITE), bg, 0, nm);
     if (r->detail[0]) { char d[200]; snprintf(d, sizeof d, "%s", r->detail); fit(d, TT_COLS - col - name_w - 1); tt_print(col + name_w + 1, row, hl ? TT_YELLOW : TT_CYAN, bg, 0, d); }
@@ -286,7 +291,8 @@ static void vcr_page(const Page *p) {
     if (p->kind == PAGE_CHECK) { text(x, ry, 34, VCR_W, r->checked ? "ON " : "OFF"); x += tt_text_width(34, "OFF "); }
     char nm[200]; snprintf(nm, sizeof nm, "%s%s", r->text, r->fav ? " *" : "");
     int avail = W - 40 - x;
-    if (r->detail[0]) { fit(nm, chars_for(avail / 2, 34)); text(x, ry, 34, VCR_W, nm); char d[200]; snprintf(d, sizeof d, "%s", r->detail); fit(d, chars_for(avail / 2 - 10, 24)); text(x + avail / 2 + 10, ry + 6, 24, VCR_Y, d); }
+    if (r->detail[0] && strlen(r->detail) <= 8) { int dw = tt_text_width(28, r->detail); fit(nm, chars_for(avail - dw - 20, 34)); text(x, ry, 34, VCR_W, nm); text(W - 40 - dw, ry + 4, 28, VCR_Y, r->detail); }
+    else if (r->detail[0]) { fit(nm, chars_for(avail / 2, 34)); text(x, ry, 34, VCR_W, nm); char d[200]; snprintf(d, sizeof d, "%s", r->detail); fit(d, chars_for(avail / 2 - 10, 24)); text(x + avail / 2 + 10, ry + 6, 24, VCR_Y, d); }
     else { fit(nm, chars_for(avail, 34)); text(x, ry, 34, VCR_W, nm); }
   }
   int hx = 40;
@@ -339,7 +345,8 @@ static void cable_page(const Page *p) {
     char nm[200]; snprintf(nm, sizeof nm, "%s%s", r->text, r->fav ? " *" : "");
     int avail = W - 30 - x;
     SDL_Color fg = hl ? rgb(0, 0, 0) : CB_W;
-    if (r->detail[0]) { fit(nm, chars_for(avail * 2 / 5, 30)); text(x, ry + 9, 30, fg, nm); char d[200]; snprintf(d, sizeof d, "%s", r->detail); fit(d, chars_for(avail * 3 / 5 - 10, 24)); text(x + avail * 2 / 5 + 10, ry + 12, 24, hl ? rgb(40, 0, 60) : CB_C, d); }
+    if (r->detail[0] && strlen(r->detail) <= 8) { int dw = tt_text_width(26, r->detail); fit(nm, chars_for(avail - dw - 20, 30)); text(x, ry + 9, 30, fg, nm); text(W - 20 - dw, ry + 11, 26, hl ? rgb(40, 0, 60) : CB_C, r->detail); }
+    else if (r->detail[0]) { fit(nm, chars_for(avail * 2 / 5, 30)); text(x, ry + 9, 30, fg, nm); char d[200]; snprintf(d, sizeof d, "%s", r->detail); fit(d, chars_for(avail * 3 / 5 - 10, 24)); text(x + avail * 2 / 5 + 10, ry + 12, 24, hl ? rgb(40, 0, 60) : CB_C, d); }
     else { fit(nm, chars_for(avail, 30)); text(x, ry + 9, 30, fg, nm); }
   }
   int hx = 20;

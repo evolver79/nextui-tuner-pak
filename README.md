@@ -4,7 +4,7 @@ Free TV on the TrimUI Brick with an old-school look. Tuner finds free channels f
 pick, shows what's on, and plays them with the snow, test cards and channel numbers of an old TV set.
 
 - **Channels:** Pluto TV and Samsung TV Plus (with their TV guides), the public channel lists from
-  [iptv-org](https://github.com/iptv-org/iptv), and your own M3U playlists.
+  [iptv-org](https://github.com/iptv-org/iptv), and your own M3U playlists and Xtream Codes accounts.
 - **TV guide:** now/next on every channel that has one, and a guide grid. Guides come from the services themselves,
   [i.mjh.nz](https://i.mjh.nz) and [epgshare01](https://epgshare01.online) (national channels), or your own XMLTV.
 - **Four looks**, switched with L2/R2:
@@ -65,10 +65,15 @@ In the CRT TV and Cable guide looks, resting on a channel in a list tunes it in 
 ## Your own channels
 
 Copy `playlists.example.txt` to `playlists.txt` in the pak folder and add one playlist per line: an M3U URL, an M3U
-file in the pak folder, or `epg <url or file>` for an XMLTV guide. Your channels appear under **My channels** and
+file in the pak folder, `epg <url or file>` for an XMLTV guide, or `xtream <server> <username> <password>` for an
+Xtream Codes account (channels, categories and guide come through the provider's API; add `m3u8` at the end for HLS). Your channels appear under **My channels** and
 are never hidden by the genre or quality settings. They're browsed by the playlist's own groups, in playlist order
 (or A-Z, in Settings). Settings > Free channels OFF uses only your playlists. Settings > Refresh channels now reloads
 them.
+
+**Privacy:** Tuner never writes your playlist addresses, Xtream server logins or stream URLs to its log
+(`Logs/Tuner.txt`). It logs channel names only, and every address in the video library's own error messages is
+replaced by `[url]`. Your playlists.txt stays on your SD card.
 
 Settings, favourites and the cache live in `.userdata/tg5040/Tuner/` on the SD card.
 

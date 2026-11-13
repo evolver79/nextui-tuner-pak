@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <zlib.h>
+#include <SDL2/SDL.h>
 
 static char *read_file(const char *path, size_t *len) {
   FILE *f = fopen(path, "rb"); if (!f) return NULL;
@@ -65,4 +66,44 @@ char *fetch(const char *url, const char *user_agent, const char *cache_path, lon
   }
   free(buf);
   return cached ? read_file(cache_path, len) : NULL;   // offline: the last copy, however old
+}
+
+int fetch_to_file(const char *url, const char *user_agent, const char *path, long max_age) {
+  struct stat st;
+  int cached = stat(path, &st) == 0 && st.st_size > 0;
+  if (cached && time(NULL) - st.st_mtime < max_age) return 1;
+  AVIOContext *io = NULL; AVDictionary *opt = NULL;
+  av_dict_set(&opt, "rw_timeout", "30000000", 0);
+  if (user_agent && user_agent[0]) av_dict_set(&opt, "user_agent", user_agent, 0);
+  int ok = 0;
+  if (avio_open2(&io, url, AVIO_FLAG_READ, NULL, &opt) >= 0) {
+    char tmp[700]; snprintf(tmp, sizeof tmp, "%s.part", path);
+    FILE *f = fopen(tmp, "wb");
+    if (f) {
+      unsigned char chunk[65536]; int r; long total = 0;
+      while ((r = avio_read(io, chunk, sizeof chunk)) > 0) { fwrite(chunk, 1, r, f); total += r; }
+      fclose(f);
+      if (total > 0 && rename(tmp, path) == 0) ok = 1; else remove(tmp);
+    }
+    avio_closep(&io);
+  }
+  av_dict_free(&opt);
+  return ok || cached;
+}
+
+typedef struct { char url[1024], ua[128], path[700]; volatile int *done; } AsyncJob;
+static int async_thread(void *arg) {
+  AsyncJob *j = arg;
+  struct stat before; int had = stat(j->path, &before) == 0;
+  int ok = fetch_to_file(j->url, j->ua, j->path, 0);
+  struct stat after;
+  if (ok && j->done && stat(j->path, &after) == 0 && (!had || after.st_mtime != before.st_mtime)) *j->done = 1;
+  free(j);
+  return 0;
+}
+void fetch_to_file_async(const char *url, const char *user_agent, const char *path, volatile int *done) {
+  AsyncJob *j = calloc(1, sizeof *j);
+  snprintf(j->url, sizeof j->url, "%s", url); snprintf(j->ua, sizeof j->ua, "%s", user_agent ? user_agent : "");
+  snprintf(j->path, sizeof j->path, "%s", path); j->done = done;
+  SDL_DetachThread(SDL_CreateThread(async_thread, "guide", j));
 }

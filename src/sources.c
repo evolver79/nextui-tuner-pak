@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 const Choice LANGUAGES[] = {
   {"eng", "English"}, {"nor", "Norsk"}, {"swe", "Svenska"}, {"dan", "Dansk"}, {"fin", "Suomi"}, {"isl", "Islenska"},
@@ -29,6 +30,7 @@ static const char *PLUTO_REGIONS = "us,gb,es,ca,de,br,mx,cl,fr,it,no,se,dk,ar";
 static const char *SAMSUNG_REGIONS = "at,ca,ch,de,es,fr,gb,in,it,kr,us";
 
 char sources_warning[160];
+volatile int guide_arrived;
 
 static int in_csv(const char *csv, const char *item) {
   size_t n = strlen(item);
@@ -146,6 +148,76 @@ static void fill_mjh_guides(const char *service, const char *cache_name, const c
   free(need);
 }
 
+
+// Xtream Codes accounts ("xtream <server> <user> <password> [ts|m3u8]" in playlists.txt): live channels, their
+// categories (the groups under My channels) and the guide, through the provider's player_api.php and xmltv.php.
+// The login is only ever put in the URLs, never in the log.
+static int add_xtream(int k, const char *server_in, const char *user, const char *pass, const char *ext, ChannelList *all,
+                      long list_age, long guide_age, ProgressFn cb, void *ud) {
+  char server[256]; snprintf(server, sizeof server, "%s", server_in);
+  size_t sl = strlen(server); while (sl && server[sl - 1] == '/') server[--sl] = 0;
+  if (strncmp(server, "http", 4)) { char tmp[256]; snprintf(tmp, sizeof tmp, "http://%s", server); snprintf(server, sizeof server, "%s", tmp); }
+  char url[768], cp[600], name[64];
+  cb("Fetching your Xtream account...", ud);
+  snprintf(url, sizeof url, "%s/player_api.php?username=%s&password=%s&action=get_live_categories", server, user, pass);
+  snprintf(name, sizeof name, "xtream-%d-categories.json", k); cache_path(cp, sizeof cp, name);
+  char *cats_json = fetch(url, NULL, cp, list_age, NULL);
+  snprintf(url, sizeof url, "%s/player_api.php?username=%s&password=%s&action=get_live_streams", server, user, pass);
+  snprintf(name, sizeof name, "xtream-%d-live.json", k); cache_path(cp, sizeof cp, name);
+  char *live_json = fetch(url, NULL, cp, list_age, NULL);
+  if (!live_json) { free(cats_json); return 0; }
+  cJSON *cats = cats_json ? cJSON_Parse(cats_json) : NULL, *live = cJSON_Parse(live_json);
+  free(cats_json); free(live_json);
+  if (!cJSON_IsArray(live)) { cJSON_Delete(cats); cJSON_Delete(live); return 0; }
+  unsigned long acct = 5381; for (const char *q = server; *q; q++) acct = acct * 33 + (unsigned char)*q;
+  for (const char *q = user; *q; q++) acct = acct * 33 + (unsigned char)*q;
+  int first = all->n, added = 0, order = 0;
+  cJSON *it;
+  cb("Reading your Xtream channels...", ud);
+  cJSON_ArrayForEach(it, live) {
+    cJSON *sid = cJSON_GetObjectItem(it, "stream_id");
+    long id = cJSON_IsNumber(sid) ? (long)sid->valuedouble : cJSON_IsString(sid) ? atol(sid->valuestring) : -1;
+    if (id < 0) continue;
+    Channel *c = channel_add(all);
+    const char *v;
+    if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(it, "name")))) snprintf(c->name, sizeof c->name, "%s", v);
+    if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(it, "stream_icon")))) snprintf(c->logo, sizeof c->logo, "%s", v);
+    if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(it, "epg_channel_id")))) snprintf(c->id, sizeof c->id, "%s", v);
+    // category id -> name
+    cJSON *cid = cJSON_GetObjectItem(it, "category_id");
+    char cidbuf[32] = "";
+    if (cJSON_IsString(cid)) snprintf(cidbuf, sizeof cidbuf, "%s", cid->valuestring);
+    else if (cJSON_IsNumber(cid)) snprintf(cidbuf, sizeof cidbuf, "%ld", (long)cid->valuedouble);
+    cJSON *cat;
+    cJSON_ArrayForEach(cat, cats) {
+      cJSON *x = cJSON_GetObjectItem(cat, "category_id");
+      char xb[32] = "";
+      if (cJSON_IsString(x)) snprintf(xb, sizeof xb, "%s", x->valuestring); else if (cJSON_IsNumber(x)) snprintf(xb, sizeof xb, "%ld", (long)x->valuedouble);
+      if (cidbuf[0] && !strcmp(xb, cidbuf)) { if ((v = cJSON_GetStringValue(cJSON_GetObjectItem(cat, "category_name")))) snprintf(c->group, sizeof c->group, "%s", v); break; }
+    }
+    c->genre = c->group[0] ? genre_of(c->group) : G_GENERAL;
+    cJSON *num = cJSON_GetObjectItem(it, "num");
+    c->order = (cJSON_IsNumber(num) ? (int)num->valuedouble : order) + k * 1000000;
+    order++;
+    snprintf(c->url, sizeof c->url, "%s/live/%s/%s/%ld.%s", server, user, pass, id, ext);
+    snprintf(c->source, sizeof c->source, "custom");
+    snprintf(c->key, sizeof c->key, "xt:%lx:%ld", acct, id);
+    added++;
+  }
+  cJSON_Delete(cats); cJSON_Delete(live);
+  // the account's guide, matched by epg_channel_id
+  cb("Fetching your Xtream guide...", ud);
+  snprintf(url, sizeof url, "%s/xmltv.php?username=%s&password=%s", server, user, pass);
+  snprintf(name, sizeof name, "xtream-%d.xml", k); cache_path(cp, sizeof cp, name);
+  // Providers' guides can be hundreds of MB on a slow server: use the copy we have (if any) and fetch a new one in the
+  // background when it's old or missing, so the channels never wait for it.
+  struct stat st; int have = stat(cp, &st) == 0 && st.st_size > 0;
+  if (!have || time(NULL) - st.st_mtime >= guide_age) { cb("Your guide downloads in the background", ud); fetch_to_file_async(url, NULL, cp, &guide_arrived); }
+  if (have) { int got = load_xmltv(cp, all->v + first, all->n - first, 0); fprintf(stderr, "xtream account %d: %d channels, %d programmes\n", k + 1, added, got); }
+  else fprintf(stderr, "xtream account %d: %d channels, guide downloading\n", k + 1, added);
+  return added;
+}
+
 static int add_m3u_url(const char *url, const char *cache_name, const char *source, ChannelList *out, long max_age) {
   char cp[600]; cache_path(cp, sizeof cp, cache_name);
   char *text = fetch(url, NULL, cp, max_age, NULL);
@@ -198,9 +270,7 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     snprintf(msg, sizeof msg, "Fetching TV guide: %s...", EPGSHARE[e].cc); cb(msg, ud);
     char p[700]; snprintf(name, sizeof name, "epgshare-%s.xml", EPGSHARE[e].file); cache_path(p, sizeof p, name);
     snprintf(url, sizeof url, "https://epgshare01.online/epgshare01/epg_ripper_%s.xml.gz", EPGSHARE[e].file);
-    char *x = fetch(url, NULL, p, force ? 0 : 12 * 3600, NULL);
-    if (!x) continue;
-    free(x);
+    if (!fetch_to_file(url, NULL, p, force ? 0 : 12 * 3600)) continue;
     // iptv-org channels only (Pluto/Samsung have their own guides)
     int first = -1, last = -1;
     for (int i = 0; i < all.n; i++) if (!strcmp(all.v[i].source, "iptv")) { if (first < 0) first = i; last = i; }
@@ -213,6 +283,7 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
   // or file>" for an XMLTV guide, # for comments), plus custom_m3u=/custom_xmltv= in settings.ini.
   int first_custom = all.n;
   char lists[4096] = "", guides[4096] = "";
+  char xtream[8][4][256]; int nxtream = 0;   // server, user, password, ts|m3u8
   snprintf(lists, sizeof lists, "%s", s->custom_m3u);
   snprintf(guides, sizeof guides, "%s", s->custom_xmltv);
   char pl[700]; snprintf(pl, sizeof pl, "%s/playlists.txt", s->pak_dir);
@@ -223,6 +294,18 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
       line[strcspn(line, "\r\n")] = 0;
       char *t = line; while (*t == ' ' || *t == '\t') t++;
       if (!*t || *t == '#') continue;
+      // addresses pasted through a shell often get \? \= \& escapes; a URL never needs them
+      for (char *r = t, *w = t; ; r++) { if (*r != '\\') *w++ = *r; if (!*r) break; }
+      if (!strncmp(t, "xtream ", 7) && nxtream < 8) {
+        char *f[5] = {0}; int nf = 0; char *sv = NULL;
+        for (char *w = strtok_r(t + 7, " \t", &sv); w && nf < 5; w = strtok_r(NULL, " \t", &sv)) f[nf++] = w;
+        if (nf >= 3) {
+          for (int q = 0; q < 3; q++) snprintf(xtream[nxtream][q], sizeof xtream[nxtream][q], "%s", f[q]);
+          snprintf(xtream[nxtream][3], sizeof xtream[nxtream][3], "%s", nf >= 4 && !strcmp(f[3], "m3u8") ? "m3u8" : "ts");
+          nxtream++;
+        } else fprintf(stderr, "playlists.txt: xtream needs <server> <username> <password>\n");
+        continue;
+      }
       int epg = !strncmp(t, "epg ", 4);
       if (epg) { t += 4; while (*t == ' ') t++; }
       char *dst = epg ? guides : lists;
@@ -248,9 +331,13 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
         char *text = malloc(n + 1);
         if (fread(text, 1, n, f) == (size_t)n) { text[n] = 0; parse_m3u(text, &all, "custom"); }
         free(text); fclose(f);
-      } else { failed++; fprintf(stderr, "playlist not found: %s\n", p); }
+      } else { failed++; fprintf(stderr, "playlist %d: file not found in the pak folder\n", k + 1); }
     }
   }
+  for (int x = 0; x < nxtream; x++)
+    if (!add_xtream(x, xtream[x][0], xtream[x][1], xtream[x][2], xtream[x][3], &all, list_age, guide_age, cb, ud)) {
+      failed++; fprintf(stderr, "xtream account %d: no channels (login or server?)\n", x + 1);
+    }
   if (failed) snprintf(sources_warning, sizeof sources_warning, "%d of your playlists gave no channels (download failed?)", failed);
   k = 0; save = NULL;
   for (char *t = strtok_r(guides, " ", &save); t; t = strtok_r(NULL, " ", &save), k++) {
@@ -258,7 +345,7 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     char p[1200];
     if (!strncmp(t, "http", 4)) {
       snprintf(name, sizeof name, "custom-%d.xml", k); cache_path(p, sizeof p, name);
-      char *x = fetch(t, NULL, p, guide_age, NULL); free(x);
+      fetch_to_file(t, NULL, p, guide_age);
     } else snprintf(p, sizeof p, t[0] == '/' ? "%s" : "%s/%s", t[0] == '/' ? t : s->pak_dir, t);
     load_xmltv(p, all.v + first_custom, all.n - first_custom, 0);
   }

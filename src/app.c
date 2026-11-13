@@ -3,6 +3,7 @@
 #include <SDL2/SDL.h>
 #include <libavformat/avformat.h>
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -525,6 +526,24 @@ static void shots(const char *dir) {
   }
 }
 
+
+// ffmpeg's error messages can quote stream and playlist URLs, and yours hold your provider and often a login. Every
+// URL in them is replaced by [url] before it reaches the log, so no provider, login or address is ever written.
+static void log_masked(void *avcl, int level, const char *fmt, va_list vl) {
+  (void)avcl;
+  if (level > av_log_get_level()) return;
+  char line[1024], out[1024]; vsnprintf(line, sizeof line, fmt, vl);
+  size_t o = 0;
+  for (const char *p = line; *p && o < sizeof out - 8; ) {
+    if (!strncmp(p, "http://", 7) || !strncmp(p, "https://", 8) || !strncmp(p, "rtmp://", 7) || !strncmp(p, "rtsp://", 7)) {
+      memcpy(out + o, "[url]", 5); o += 5;
+      while (*p && *p != ' ' && *p != '\'' && *p != '"' && *p != '\n') p++;
+    } else out[o++] = *p++;
+  }
+  out[o] = 0;
+  fputs(out, stderr);
+}
+
 int main(int argc, char **argv) {
   const char *dir = argc > 1 ? argv[1] : ".";
   const char *pak = argc > 2 ? argv[2] : ".";
@@ -536,6 +555,7 @@ int main(int argc, char **argv) {
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
   avformat_network_init();
   av_log_set_level(AV_LOG_ERROR);
+  av_log_set_callback(log_masked);
   SDL_Window *win = SDL_CreateWindow("Tuner", 0, 0, 1024, 768, SDL_WINDOW_FULLSCREEN);
   ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
   SDL_RenderSetLogicalSize(ren, 1024, 768);
@@ -598,6 +618,7 @@ int main(int argc, char **argv) {
       else if (sleep_at - now < 60000 && !sleep_warned) { sleep_warned = 1; say("SLEEP IN 1 MINUTE"); }
     }
     logos_pump();
+    if (guide_arrived) { guide_arrived = 0; say("TV GUIDE UPDATED (USED NEXT START)"); }
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
     if (tv_state() != TV_OFF) tv_render();
     if (screen == SCR_WATCH) {

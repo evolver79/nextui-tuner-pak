@@ -10,6 +10,8 @@ typedef void (*ProgressFn)(const char *msg, void *ud);
 void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb, void *ud);
 // After sources_build: a note about your playlists that failed ("" when all went fine).
 extern char sources_warning[160];
+// Set to 1 when a guide that was downloading in the background has arrived (it is used from the next load).
+extern volatile int guide_arrived;
 
 typedef struct { const char *code, *name; } Choice;
 extern const Choice LANGUAGES[]; extern const int NLANGUAGES;
