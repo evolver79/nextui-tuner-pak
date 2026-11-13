@@ -68,6 +68,11 @@ hence the static one.
 
 Pushing a tag `vX.Y.Z` that matches `version` in `pak.json` makes a GitHub release with the zip attached.
 
+## Made with an AI assistant
+
+This project was built with the help of an LLM (Claude, by Anthropic): the code, build scripts and documentation were
+written in conversation with it, and tested on a real TrimUI Brick.
+
 ## Licenses and credits
 
 - Tuner's own code is MIT ([LICENSE](LICENSE)).
