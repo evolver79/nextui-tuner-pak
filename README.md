@@ -19,6 +19,21 @@ pick, shows what's on, and plays them with the snow, test cards and channel numb
 
 Tested on the TrimUI Brick (`tg5040`).
 
+## Screenshots
+
+| CRT TV | Teletext |
+|---|---|
+| ![CRT TV channel list](.github/resources/screenshots/crt-list.png) | ![Teletext front page](.github/resources/screenshots/teletext.png) |
+| **VCR** | **Cable guide** |
+| ![VCR channel list](.github/resources/screenshots/vcr.png) | ![Cable guide channel list](.github/resources/screenshots/cable-list.png) |
+| **TV guide (CRT TV)** | **TV guide (Cable guide)** |
+| ![CRT TV guide grid](.github/resources/screenshots/crt-guide.png) | ![Cable guide grid](.github/resources/screenshots/cable-guide.png) |
+| **Search** | |
+| ![Search keyboard](.github/resources/screenshots/crt-search.png) | |
+
+Taken on the Brick with nothing tuned, so the test card is behind the menus; in the CRT TV and Cable guide looks the
+live channel plays there instead.
+
 ## Install
 
 **Pak Store:** look for Tuner under Tools.

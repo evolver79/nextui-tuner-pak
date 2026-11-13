@@ -11,5 +11,14 @@
   },
   "platforms": [
     "tg5040"
+  ],
+  "screenshots": [
+    ".github/resources/screenshots/crt-list.png",
+    ".github/resources/screenshots/teletext.png",
+    ".github/resources/screenshots/vcr.png",
+    ".github/resources/screenshots/cable-list.png",
+    ".github/resources/screenshots/crt-guide.png",
+    ".github/resources/screenshots/cable-guide.png",
+    ".github/resources/screenshots/crt-search.png"
   ]
 }
