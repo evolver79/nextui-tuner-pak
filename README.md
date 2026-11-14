@@ -5,46 +5,44 @@ pick, shows what's on, and plays them with the snow, test cards and channel numb
 
 - **Channels:** Pluto TV and Samsung TV Plus (with their TV guides), the public channel lists from
   [iptv-org](https://github.com/iptv-org/iptv), and your own M3U playlists and Xtream Codes accounts.
-- **TV guide:** now/next on every channel that has one, and a guide grid. Guides come from the services themselves,
-  [i.mjh.nz](https://i.mjh.nz) and [epgshare01](https://epgshare01.online) (national channels), or your own XMLTV.
-- **Seven looks**, switched with L2/R2:
-  - **CRT TV**: a 90s TV's on-screen menus over the live picture.
-  - **Teletext**: pages, page numbers and coloured fastext labels.
-  - **VCR**: the video recorder's blue screen.
-  - **Cable guide**: listings on a purple panel under the live picture.
-  - **8-bit Quest**: a top-down adventure's HUD. A map of the list's pages, item boxes for the buttons, and LIFE
-    hearts that show the battery. A sword points at the channel.
-  - **16-bit RPG**: blue menu windows with a pointing hand, over the live picture. In the banner, a status bar shows
-    the time left of the programme.
-  - **Pocket**: an old green handheld's four-shade dot-matrix screen.
-
-  The game looks use an 8x8 pixel font and drawings made for Tuner, not art from any game.
+- **TV guide:** now and next on every channel that has one, and a listings guide. Guides come from the services
+  themselves, [i.mjh.nz](https://i.mjh.nz) and [epgshare01](https://epgshare01.online) (national channels), or your
+  own XMLTV and your Xtream provider's guide (kept for a day, read quickly even when it's tens of MB).
+- **Two looks**, switched with L2/R2:
+  - **VCR**: a video recorder's on-screen display in big blocky letters, over the live picture (or the blue screen
+    when nothing plays). Holding up or down winds the tape (FF/REW with tracking noise), a new channel comes in with
+    tracking noise, the banner has a tape counter, and loading is TRACKING with 12:00 blinking.
+  - **Teletext**: pages on the 40x25 grid. A page you open is searched for first (the header's page counter rolls by)
+    and then arrives row by row. A block-graphics masthead on P100, a real listings page on P300, coloured fastext
+    labels, and the channel info as newsflash boxes over the picture.
+- **Hardware video decoding:** H.264 and H.265 are decoded on the Brick's video engine, which takes about a fifth of
+  one CPU core where software decoding takes three (Settings > Hardware decoding; anything else stays in software).
+- **Audio tracks:** on channels with several (often marked MULTI), Tuner picks the one in your languages; LEFT/RIGHT
+  switches while watching, and your choice is remembered per channel.
+- **Stats for nerds** (SELECT while watching): codec, size and frame rates, dropped frames, A/V sync, queues, the
+  stream's bitrate and quality steps, audio tracks, CPU, temperature and Wi-Fi.
 - **Tuning in:** snow over the programme's picture while a channel connects and a test card on long waits (or, if
   you prefer, a plain screen with the channel info and LOADING), and a plain-words message when a channel can't be
   played.
-- Favourites, Most watched and Recently watched (they fill up by themselves as you watch), search, channel logos, scanline and CRT picture overlays, a sleep timer, an adult PIN. Tuner starts on
-  the channel you watched last.
+- Favourites, Most watched and Recently watched (they fill up by themselves as you watch), search, channel logos,
+  scanline and CRT picture overlays, a sleep timer, an adult PIN, and the volume shown when you change it. Tuner starts
+  on the channel you watched last, and START (or B on the front page) takes you back to it from the menus.
 
 Tested on the TrimUI Brick (`tg5040`).
 
 ## Screenshots
 
-| CRT TV | Teletext |
+| VCR | Teletext |
 |---|---|
-| ![CRT TV channel list](.github/resources/screenshots/crt-list.png) | ![Teletext front page](.github/resources/screenshots/teletext.png) |
-| **VCR** | **Cable guide** |
-| ![VCR channel list](.github/resources/screenshots/vcr.png) | ![Cable guide channel list](.github/resources/screenshots/cable-list.png) |
-| **TV guide (CRT TV)** | **TV guide (Cable guide)** |
-| ![CRT TV guide grid](.github/resources/screenshots/crt-guide.png) | ![Cable guide grid](.github/resources/screenshots/cable-guide.png) |
-| **8-bit Quest** | **16-bit RPG** |
-| ![8-bit Quest channel list](.github/resources/screenshots/quest-list.png) | ![16-bit RPG channel list](.github/resources/screenshots/rpg-list.png) |
-| **Pocket** | |
-| ![Pocket channel list](.github/resources/screenshots/pocket-list.png) | |
+| ![VCR channel list](.github/resources/screenshots/vcr-list.png) | ![Teletext front page](.github/resources/screenshots/teletext-front.png) |
+| ![VCR guide](.github/resources/screenshots/vcr-guide.png) | ![Teletext guide](.github/resources/screenshots/teletext-guide.png) |
+| ![VCR channel info](.github/resources/screenshots/vcr-banner.png) | ![Teletext channel list](.github/resources/screenshots/teletext-list.png) |
+| ![VCR front page](.github/resources/screenshots/vcr-front.png) | ![Teletext channel info](.github/resources/screenshots/teletext-banner.png) |
 | **Search** | |
-| ![Search keyboard](.github/resources/screenshots/crt-search.png) | |
+| ![Search keyboard](.github/resources/screenshots/search.png) | |
 
-Taken on the Brick with nothing tuned, so the test card is behind the menus; in the CRT TV and Cable guide looks the
-live channel plays there instead.
+Drawn by Tuner's screenshot mode with nothing tuned, so the test card stands in for the picture; in the VCR look the
+live channel plays behind the menus instead.
 
 ## Install
 
@@ -61,17 +59,18 @@ background once a day (guides every few hours) and kept on the card, so Tuner al
 
 | Button | In the menus | Watching |
 |---|---|---|
-| D-pad | Move (left/right: page) | Up/down: change channel |
+| D-pad | Move (left/right: page) | Up/down: change channel. Left/right: audio track |
 | A | Open / watch | Show or hide the channel info |
-| B | Back | Back to the menu |
+| B | Back (on the front page: back to the channel) | Back to the menu |
 | Y | Favourite | Favourite |
 | X | Hide channel | Previous channel |
 | L1/R1 | Page up/down | Picture overlay (scanlines, CRT) |
-| L2/R2 | Theme | Theme |
-| Select | | FPS counter |
+| L2/R2 | Look | Look |
+| START | Back to the channel you were watching | |
+| SELECT | | Stats for nerds |
 | MENU | Quit | Quit |
 
-In the CRT TV and Cable guide looks, resting on a channel in a list tunes it in behind the menu.
+In the VCR look, resting on a channel in a list tunes it in behind the menu.
 
 ## Most watched and Recently watched
 
@@ -114,6 +113,10 @@ Silicon builds natively. They need `deps/ffmpeg-6.1.2.tar.xz` from [ffmpeg.org](
 Tuner links the Brick's own SDL2, SDL2_image, SDL2_ttf, OpenSSL and zlib. The Brick's ffmpeg has no HLS or HTTPS,
 hence the static one.
 
+Hardware decoding (`src/hwdec.c`) loads Allwinner's CedarC libraries from the Brick's `/usr/lib` at run time; they
+aren't part of this repository or the pak. Its struct layouts follow CedarC 1.3.0 as built for the Brick and were
+checked against the library's own code.
+
 Pushing a tag `vX.Y.Z` that matches `version` in `pak.json` makes a GitHub release with the zip attached.
 
 ## Made with an AI assistant
@@ -129,8 +132,10 @@ written in conversation with it, and tested on a real TrimUI Brick.
   everything needed to rebuild and relink Tuner.
 - [cJSON](https://github.com/DaveGamble/cJSON) is MIT (`src/vendor/LICENSE-cJSON`).
 - The [Bedstead](https://bjh21.me.uk/bedstead/) font is public domain.
+- The VCR look's 8x8 pixel font is [font8x8](https://github.com/dhepper/font8x8) by Daniel Hepper, public domain
+  (after the public domain IBM VGA fonts).
 - Channel lists: [iptv-org](https://github.com/iptv-org/iptv) and [i.mjh.nz](https://i.mjh.nz); guides also from
   [epgshare01](https://epgshare01.online).
 
-Tuner only plays streams the services make freely available. It isn't affiliated with Pluto TV, Samsung TV Plus or
+Tuner only plays streams the services make freely available (and those in your own playlists). It isn't affiliated with Pluto TV, Samsung TV Plus or
 any broadcaster, and their names belong to their owners.

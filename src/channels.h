@@ -46,4 +46,6 @@ void norm_name(const char *in, char *out, size_t size);
 void now_next(const Channel *c, time_t now, const Programme **cur, const Programme **next);
 // Adds a programme (stop 0 = until the next one starts; fixed by sort_programmes).
 void add_programme(Channel *c, time_t start, time_t stop, const char *title, const char *icon);
+void progs_free(Programme *p);   // programme lists are shared between channels with the same guide id
+extern time_t xmltv_last_stop;   // set by load_xmltv: the end of the guide's last programme
 void sort_programmes(Channel *c);

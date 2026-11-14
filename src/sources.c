@@ -210,11 +210,19 @@ static int add_xtream(int k, const char *server_in, const char *user, const char
   snprintf(url, sizeof url, "%s/xmltv.php?username=%s&password=%s", server, user, pass);
   snprintf(name, sizeof name, "xtream-%d.xml", k); cache_path(cp, sizeof cp, name);
   // Providers' guides can be hundreds of MB on a slow server: use the copy we have (if any) and fetch a new one in the
-  // background when it's old or missing, so the channels never wait for it.
+  // background when it's missing, a day old, or about to run out (less than 6 hours of programmes left), so the
+  // channels never wait for it.
   struct stat st; int have = stat(cp, &st) == 0 && st.st_size > 0;
-  if (!have || time(NULL) - st.st_mtime >= guide_age) { cb("Your guide downloads in the background", ud); fetch_to_file_async(url, NULL, cp, &guide_arrived); }
-  if (have) { int got = load_xmltv(cp, all->v + first, all->n - first, 0); fprintf(stderr, "xtream account %d: %d channels, %d programmes\n", k + 1, added, got); }
-  else fprintf(stderr, "xtream account %d: %d channels, guide downloading\n", k + 1, added);
+  time_t ends = 0;
+  if (have) {
+    cb("Reading your Xtream guide...", ud);
+    int got = load_xmltv(cp, all->v + first, all->n - first, 0); ends = xmltv_last_stop;
+    fprintf(stderr, "xtream account %d: %d channels, %d programmes, guide %ld h old, reaches %ld h ahead\n", k + 1, added, got,
+            (long)(time(NULL) - st.st_mtime) / 3600, (long)(ends - time(NULL)) / 3600);
+  } else fprintf(stderr, "xtream account %d: %d channels, guide downloading\n", k + 1, added);
+  if (!have || time(NULL) - st.st_mtime >= guide_age || ends < time(NULL) + 6 * 3600) {
+    cb("Your guide downloads in the background", ud); fetch_to_file_async(url, NULL, cp, &guide_arrived);
+  }
   return added;
 }
 
@@ -235,7 +243,8 @@ static int cmp_channel(const void *a, const void *b) {
 
 void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb, void *ud) {
   ChannelList all = {0};
-  long guide_age = force ? 0 : 6 * 3600, list_age = force ? 0 : 24 * 3600;
+  // Pluto/Samsung guides are small and reach only hours ahead: 6 h. Provider and own guides: a day.
+  long guide_age = force ? 0 : 6 * 3600, list_age = force ? 0 : 24 * 3600, day = force ? 0 : 24 * 3600;
   char tmp[256], url[256], name[64], msg[96];
   if (!s->free_off) {
   add_mjh("PlutoTV", PLUTO_REGIONS, s->countries, "https://jmp2.uk/plu-%s.m3u8", NULL, "pluto", "plu", &all, guide_age, cb, ud);
@@ -335,7 +344,7 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     }
   }
   for (int x = 0; x < nxtream; x++)
-    if (!add_xtream(x, xtream[x][0], xtream[x][1], xtream[x][2], xtream[x][3], &all, list_age, guide_age, cb, ud)) {
+    if (!add_xtream(x, xtream[x][0], xtream[x][1], xtream[x][2], xtream[x][3], &all, list_age, day, cb, ud)) {
       failed++; fprintf(stderr, "xtream account %d: no channels (login or server?)\n", x + 1);
     }
   if (failed) snprintf(sources_warning, sizeof sources_warning, "%d of your playlists gave no channels (download failed?)", failed);
@@ -345,7 +354,7 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     char p[1200];
     if (!strncmp(t, "http", 4)) {
       snprintf(name, sizeof name, "custom-%d.xml", k); cache_path(p, sizeof p, name);
-      fetch_to_file(t, NULL, p, guide_age);
+      fetch_to_file(t, NULL, p, day);
     } else snprintf(p, sizeof p, t[0] == '/' ? "%s" : "%s/%s", t[0] == '/' ? t : s->pak_dir, t);
     load_xmltv(p, all.v + first_custom, all.n - first_custom, 0);
   }
@@ -375,7 +384,7 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     while (ok && seen[slot]) { if (!strcmp(seen[slot], c->url)) ok = 0; else slot = (slot + 1) & (hcap - 1); }
     if (ok) seen[slot] = c->url;
     if (ok) { Channel *d = channel_add(out); *d = *c; c->progs = NULL; }
-    else free(c->progs);
+    else progs_free(c->progs);
     c->progs = NULL;
   }
   free(seen);

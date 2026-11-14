@@ -36,8 +36,10 @@ typedef struct {
   void (*page)(const Page *p);
   void (*banner)(const Channel *c, int number);   // over the picture while watching
   void (*toast)(const char *msg, int line);       // short messages, top right
+  void (*volume)(int v, int max, int muted);       // the volume, for a moment after it changes
 } Theme;
 
 extern const Theme *THEMES[]; extern const int NTHEMES;
 void themes_init(SDL_Renderer *r);
-void draw_testcard(void);   // the test card (also shown by the TV engine on long waits)
+void draw_testcard(void);
+void themes_still(int on);   // screenshots: long names don't tick along   // the test card (also shown by the TV engine on long waits)

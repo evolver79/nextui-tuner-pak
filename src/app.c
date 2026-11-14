@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dlfcn.h>
+#include <unistd.h>
 #include "channels.h"
 #include "sources.h"
 #include "store.h"
@@ -43,6 +45,7 @@ static Uint32 banner_until, toast_until, last_move;
 static char toast[64];
 static int show_osd;
 static int prev_index = -1;                        // X while watching: back to the channel before
+static char resume_key[64]; static ListKind resume_kind; static int resume_genre;   // START in the menus: back to this channel, in this list
 static Uint32 sleep_at; static int sleep_min, sleep_warned;
 static int pin_unlocked, pin_setting, pin_digits[4], pin_pos;   // adult PIN: entering to set (pin_setting) or to unlock
 static Screen pin_return;
@@ -137,6 +140,29 @@ static void keep_visible(int n) {
   if (cursor < top) top = cursor;
   if (cursor >= top + rows) top = cursor - rows + 1;
 }
+// NextUI's settings live in shared memory, read through its libmsettings: the volume, shown when it changes (the
+// volume buttons themselves are NextUI's). Not on the Brick (or not under NextUI): nothing.
+static int (*ms_volume)(void), (*ms_mute)(void);
+static int vol_last = -1, mute_last = -1; static Uint32 vol_until, vol_checked;
+static void volume_init(void) {
+  void *h = dlopen("libmsettings.so", RTLD_NOW);
+  if (!h) {
+    char p[600]; const char *sys = getenv("SYSTEM_PATH");
+    snprintf(p, sizeof p, "%s/lib/libmsettings.so", sys ? sys : "/mnt/SDCARD/.system/tg5040"); h = dlopen(p, RTLD_NOW);
+  }
+  if (!h || access("/dev/shm/SharedSettings", F_OK) != 0) return;   // only as a reader of NextUI's own settings
+  void (*init)(void) = (void (*)(void))dlsym(h, "InitSettings");
+  ms_volume = (int (*)(void))dlsym(h, "GetVolume"); ms_mute = (int (*)(void))dlsym(h, "GetMute");
+  if (!init || !ms_volume) { ms_volume = NULL; return; }
+  init();
+}
+static void volume_poll(void) {
+  if (!ms_volume || SDL_GetTicks() - vol_checked < 100) return;
+  vol_checked = SDL_GetTicks();
+  int v = ms_volume(), m = ms_mute ? ms_mute() : 0;
+  if (vol_last >= 0 && (v != vol_last || m != mute_last)) vol_until = SDL_GetTicks() + 1500;
+  vol_last = v; mute_last = m;
+}
 static void say(const char *m) { snprintf(toast, sizeof toast, "%s", m); toast_until = SDL_GetTicks() + 1500; }
 
 // --- menus -----------------------------------------------------------------------------------------------------------
@@ -146,7 +172,7 @@ static const MenuItem INDEX_ITEMS[] = { {"Favourites", 101}, {"Most watched", 10
                                         {"Guide", 300}, {"Search", 400}, {"Settings", 900} };
 #define NINDEX 9
 static int index_of(int page) { for (int i = 0; i < NINDEX; i++) if (INDEX_ITEMS[i].page == page) return i; return 0; }
-#define NSETTINGS 16
+#define NSETTINGS 17
 static void setting_row(int i, Row *r) {
   memset(r, 0, sizeof *r);
   switch (i) {
@@ -165,7 +191,8 @@ static void setting_row(int i, Row *r) {
     case 12: snprintf(r->text, sizeof r->text, "My channels order"); snprintf(r->detail, sizeof r->detail, "%s", set.mine_az ? "A-Z" : "Playlist"); break;
     case 13: snprintf(r->text, sizeof r->text, "Free channels"); snprintf(r->detail, sizeof r->detail, "%s", set.free_off ? "OFF (only your playlists)" : "ON"); break;
     case 14: snprintf(r->text, sizeof r->text, "Suggest favourites"); snprintf(r->detail, sizeof r->detail, "%s", set.suggest_favs ? "ON" : "OFF"); break;
-    case 15: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
+    case 15: snprintf(r->text, sizeof r->text, "Hardware decoding"); snprintf(r->detail, sizeof r->detail, "%s", set.hwdec ? "ON" : "OFF"); break;
+    case 16: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
   }
 }
 
@@ -203,7 +230,7 @@ static void fill_page(void) {
         int n = pg == 101 ? count_where(f_fav, 0) : pg == 250 ? count_where(f_all, 0) : pg == 260 ? count_where(f_mine, 0) : -1;
         if (n >= 0) snprintf(r->detail, sizeof r->detail, "%d", n);
       }
-      p->hints[0] = "A Open"; p->hints[1] = "MENU Quit"; p->hints[2] = "L2/R2 Theme";
+      p->hints[0] = "A Open"; p->hints[1] = resume_key[0] ? "B TV" : "MENU Quit"; p->hints[2] = resume_key[0] ? "MENU Quit" : "L2/R2 Theme"; p->hints[3] = resume_key[0] ? "L2/R2 Theme" : "";
       break;
     case SCR_GENRES:
       p->kind = PAGE_MENU; p->page_no = 200; snprintf(p->title, sizeof p->title, "Channels by genre");
@@ -331,7 +358,26 @@ static void tune_view(int i) {
   tv_tune(view[watch_index]);
   banner_until = SDL_GetTicks() + 6000;
 }
-static void watch(int i) { back_from_watch = screen; prev_index = -1; tune_view(i); screen = SCR_WATCH; }
+static void watch(int i) {
+  back_from_watch = screen; prev_index = -1;
+  snprintf(resume_key, sizeof resume_key, "%s", view[i]->key); resume_kind = list_kind; resume_genre = list_genre;
+  if (tv_channel() == view[i] && tv_state() != TV_OFF) {   // still playing behind the menu: just back to it
+    watch_index = i; screen = SCR_WATCH; banner_until = SDL_GetTicks() + 6000; return;
+  }
+  tune_view(i); screen = SCR_WATCH;
+}
+// START in a menu: back to the channel you were watching (found again in its list; re-tuned if it was stopped).
+static int resume_watch(void) {
+  if (!resume_key[0]) return 0;
+  ListKind lk = list_kind; int lg = list_genre;
+  list_kind = resume_kind; list_genre = resume_genre; build_view(); sort_mine();
+  for (int i = 0; i < nview; i++) if (!strcmp(view[i]->key, resume_key)) {
+    cursor = i; keep_visible(nview); screen = SCR_LIST; watch(i); return 1;
+  }
+  list_kind = lk; list_genre = lg; build_view(); sort_mine();
+  say("THAT CHANNEL IS GONE");
+  return 0;
+}
 static void leave_watch(void) {
   watch_commit(1);
   screen = back_from_watch;
@@ -358,6 +404,8 @@ static void step_theme(int dir) {
 static void on_button(int b) {
   if (b == BTN_MENU) { running = 0; return; }
   if (b == BTN_L2 || b == BTN_R2) { step_theme(b == BTN_R2 ? 1 : -1); return; }
+  if (b == BTN_START && screen != SCR_WATCH && screen != SCR_SETUP && screen != SCR_EDIT && screen != SCR_PIN && screen != SCR_SEARCH
+      && screen != SCR_LOADING && resume_watch()) return;
   int rows = screen == SCR_GUIDE ? 8 : theme()->list_rows;
   int page_step = (b == BTN_L1 || b == BTN_LEFT) ? -rows : (b == BTN_R1 || b == BTN_RIGHT) ? rows : 0;
   int step = b == BTN_UP ? -1 : b == BTN_DOWN ? 1 : 0;
@@ -368,11 +416,13 @@ static void on_button(int b) {
       if (b == BTN_Y) { toggle_fav(view[watch_index]->key); say(is_fav(view[watch_index]->key) ? "* FAVOURITE" : "NOT A FAVOURITE"); }
       if (b == BTN_L1 || b == BTN_R1) { tv_overlay_step(b == BTN_R1 ? 1 : -1); say(tv_overlay_name()); }
       if (b == BTN_SELECT) show_osd = !show_osd;
+      if (b == BTN_LEFT || b == BTN_RIGHT) { char l[64]; tv_audio_step(b == BTN_RIGHT ? 1 : -1, l, sizeof l); say(l); }
       if (b == BTN_X && prev_index >= 0 && prev_index < nview) tune_view(prev_index);   // last channel
       if (b == BTN_B) leave_watch();
       break;
     case SCR_INDEX:
       if (step) cursor = (cursor + step + NINDEX) % NINDEX;
+      if (b == BTN_B) { resume_watch(); break; }   // the front page sits on top of the TV: B goes back to it
       if (b == BTN_A) {
         int pg = INDEX_ITEMS[cursor].page; cursor = top = 0;
         if (pg == 101) open_list(LIST_FAVS, 0, SCR_LIST);
@@ -419,8 +469,8 @@ static void on_button(int b) {
       }
       break;
     case SCR_SETTINGS:
-      if (step) cursor = (cursor + step + NSETTINGS) % NSETTINGS;
-      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 0 || cursor == 6 || cursor == 11 || cursor == 12 || cursor == 13 || cursor == 14))) {
+      if (step) { cursor = (cursor + step + NSETTINGS) % NSETTINGS; keep_visible(NSETTINGS); }
+      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 0 || cursor == 6 || cursor == 11 || cursor == 12 || cursor == 13 || cursor == 14 || cursor == 15))) {
         int dir = b == BTN_LEFT ? -1 : 1;
         if (cursor == 0) step_theme(dir);
         else if (cursor <= 3) { edit_kind = (EditKind)(cursor - 1); screen = SCR_EDIT; cursor = top = 0; }
@@ -439,7 +489,8 @@ static void on_button(int b) {
         else if (cursor == 12) { set.mine_az = !set.mine_az; settings_save(&set); }
         else if (cursor == 13) { set.free_off = !set.free_off; settings_save(&set); dirty_sources = 1; }
         else if (cursor == 14) { set.suggest_favs = !set.suggest_favs; settings_save(&set); }
-        else if (cursor == 15) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
+        else if (cursor == 15) { set.hwdec = !set.hwdec; tv_hwdec(set.hwdec); settings_save(&set); say(set.hwdec ? "HARDWARE DECODING ON" : "HARDWARE DECODING OFF"); }
+        else if (cursor == 16) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
       }
       if (b == BTN_X && cursor == 10 && set.pin[0]) { set.pin[0] = 0; settings_save(&set); say("PIN REMOVED"); }
       if (b == BTN_B) { screen = SCR_INDEX; cursor = index_of(900); top = 0; if (dirty_sources) { dirty_sources = 0; start_loading(0); } }
@@ -541,6 +592,7 @@ static void save_shot(const char *dir, const char *name) {
   SDL_SaveBMP(s, p); SDL_FreeSurface(s);
 }
 static void shots(const char *dir) {
+  themes_still(1);
   static const Screen scr[] = { SCR_INDEX, SCR_GENRES, SCR_LIST, SCR_GUIDE, SCR_SETTINGS, SCR_SETUP, SCR_SEARCH, SCR_PIN, SCR_WATCH, SCR_MYGROUPS };
   static const char *nm[] = { "index", "genres", "list", "guide", "settings", "setup", "search", "pin", "banner", "mygroups" };
   for (int t = 0; t < NTHEMES; t++) {
@@ -549,12 +601,12 @@ static void shots(const char *dir) {
     for (int k = 0; k < 10; k++) {
       screen = scr[k]; cursor = top = 0; edit_kind = EDIT_COUNTRY; setup_step = 2; pin_setting = 1; snprintf(query, sizeof query, "NRK");
       if (screen == SCR_LIST || screen == SCR_GUIDE || screen == SCR_WATCH) { list_kind = LIST_ALL; build_view(); cursor = 2; }
-      for (int frame = 0; frame < (screen == SCR_LIST ? 90 : 2); frame++) {   // lists: give the logos a moment
+      for (int frame = 0; frame < (screen == SCR_LIST ? 90 : 40); frame++) {   // lists: logos; all: a page's arrival
         logos_pump();
         SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
         if (screen == SCR_WATCH) { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3); }
         else { fill_page(); theme()->page(&page); }
-        if (frame == 0 || frame == (screen == SCR_LIST ? 89 : 1)) SDL_RenderPresent(ren); else { SDL_RenderPresent(ren); SDL_Delay(30); }
+        SDL_RenderPresent(ren); SDL_Delay(30);
       }
       // draw once more to an unpresented frame and save it
       SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
@@ -589,6 +641,7 @@ int main(int argc, char **argv) {
   const char *shots_dir = argc > 4 && !strcmp(argv[3], "--shots") ? argv[4] : NULL;
   store_init(dir);
   settings_load(&set);
+  if (set.theme < 0 || set.theme >= NTHEMES) set.theme = 0;   // a look that has since been removed
   snprintf(set.pak_dir, sizeof set.pak_dir, "%s", pak);
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
@@ -607,6 +660,8 @@ int main(int argc, char **argv) {
   themes_init(ren);
   logos_init(ren);
   tv_setup(ren, audio, &set);
+  tv_hwdec(set.hwdec);
+  volume_init();
   load_lock = SDL_CreateMutex();
 
   if (!set.setup_done) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = 0; }
@@ -674,9 +729,20 @@ int main(int argc, char **argv) {
         static const char *dots[] = { "LOADING", "LOADING.", "LOADING..", "LOADING..." };
         theme()->toast(dots[(SDL_GetTicks() / 400) % 4], 1);
       }
-      if (show_osd) { char l[96]; tv_osd_line(l, sizeof l); tt_draw(12, 12, 20, l, TT_PALETTE[TT_GREEN]); }
+      if (show_osd) {   // stats for nerds (SELECT)
+        char l[12][96]; int n = tv_nerd(l, 12), lh = 30;
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND); SDL_SetRenderDrawColor(ren, 0, 0, 0, 190);
+        SDL_Rect bg = { 12, 12, 1000, 16 + n * lh }; SDL_RenderFillRect(ren, &bg);
+        for (int i = 0; i < n; i++) {
+          char *bar = strchr(l[i], '|'); if (bar) *bar = 0;
+          tt_draw(24, 20 + i * lh, 22, l[i], TT_PALETTE[TT_YELLOW]);
+          if (bar) tt_draw(190, 20 + i * lh, 22, bar + 1, TT_PALETTE[TT_WHITE]);
+        }
+      }
     } else { fill_page(); theme()->page(&page); }
     if (SDL_GetTicks() < toast_until) theme()->toast(toast, 0);
+    volume_poll();
+    if (SDL_GetTicks() < vol_until && theme()->volume) theme()->volume(vol_last, 20, mute_last);
     SDL_RenderPresent(ren);
   }
   watch_commit(1);

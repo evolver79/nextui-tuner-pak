@@ -1,27 +1,27 @@
 {
   "name": "Tuner",
-  "version": "v1.0.0",
+  "version": "v1.1.0",
   "type": "TOOL",
-  "description": "Free TV with an old-school look: Pluto TV, Samsung TV Plus and iptv-org channels plus your own M3U playlists, a TV guide, favourites, search, and CRT TV, Teletext, VCR, Cable guide, 8-bit Quest, 16-bit RPG and Pocket themes.",
+  "description": "Free TV with an old-school look: Pluto TV, Samsung TV Plus and iptv-org channels plus your own M3U playlists and Xtream accounts, a TV guide, favourites, search, hardware video decoding, and VCR and Teletext looks.",
   "author": "evolver79",
   "repo_url": "https://github.com/evolver79/nextui-tuner-pak",
   "release_filename": "Tuner.pak.zip",
   "changelog": {
+    "v1.1.0": "Two looks, redone: VCR (an on-screen display over the picture, tape winding and tracking noise) and Teletext (pages that are searched for and arrive, a block-graphics masthead, a listings guide). Hardware video decoding (H.264/H.265) on the Brick's video engine. Stats for nerds (SELECT). Audio tracks: the one in your language, LEFT/RIGHT to switch, remembered per channel. Max quality also picks the stream's quality. Big provider guides read correctly and kept for a day. START or B on the front page: back to the channel. The volume shown when it changes. Smoother 50 fps channels, and fixes.",
     "v1.0.0": "First release."
   },
   "platforms": [
     "tg5040"
   ],
   "screenshots": [
-    ".github/resources/screenshots/crt-list.png",
-    ".github/resources/screenshots/teletext.png",
-    ".github/resources/screenshots/vcr.png",
-    ".github/resources/screenshots/cable-list.png",
-    ".github/resources/screenshots/quest-list.png",
-    ".github/resources/screenshots/rpg-list.png",
-    ".github/resources/screenshots/pocket-list.png",
-    ".github/resources/screenshots/crt-guide.png",
-    ".github/resources/screenshots/cable-guide.png",
-    ".github/resources/screenshots/crt-search.png"
+    ".github/resources/screenshots/vcr-list.png",
+    ".github/resources/screenshots/teletext-front.png",
+    ".github/resources/screenshots/vcr-guide.png",
+    ".github/resources/screenshots/teletext-guide.png",
+    ".github/resources/screenshots/vcr-banner.png",
+    ".github/resources/screenshots/teletext-list.png",
+    ".github/resources/screenshots/vcr-front.png",
+    ".github/resources/screenshots/teletext-banner.png",
+    ".github/resources/screenshots/search.png"
   ]
 }

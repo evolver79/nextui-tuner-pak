@@ -50,8 +50,15 @@ Channel *channel_add(ChannelList *l) {
   return c;
 }
 
+// Programme lists carry a small header before the array: their capacity (they grow by doubling) and how many
+// channels use them (channels with the same guide id share one list).
+typedef struct { int refs, cap; long pad; } ProgHead;
+static ProgHead *prog_head(Programme *p) { return (ProgHead *)p - 1; }
+void progs_free(Programme *p) { if (p && --prog_head(p)->refs <= 0) free(prog_head(p)); }
+static Programme *progs_share(Programme *p) { if (p) prog_head(p)->refs++; return p; }
+
 void channel_list_free(ChannelList *l) {
-  for (int i = 0; i < l->n; i++) free(l->v[i].progs);
+  for (int i = 0; i < l->n; i++) progs_free(l->v[i].progs);
   free(l->v); memset(l, 0, sizeof *l);
 }
 
@@ -136,7 +143,15 @@ static void unescape(char *s) {
 }
 
 void add_programme(Channel *c, time_t start, time_t stop, const char *title, const char *icon) {
-  c->progs = realloc(c->progs, (c->nprogs + 1) * sizeof *c->progs);
+  ProgHead *h = c->progs ? prog_head(c->progs) : NULL;
+  if (!h || h->refs > 1 || c->nprogs >= h->cap) {   // new, shared (copy before writing) or full: a bigger list of our own
+    int cap = h && c->nprogs >= h->cap ? h->cap * 2 : h ? h->cap : 8;
+    ProgHead *nh = malloc(sizeof *nh + (size_t)cap * sizeof *c->progs);
+    nh->refs = 1; nh->cap = cap;
+    if (c->nprogs) memcpy(nh + 1, c->progs, c->nprogs * sizeof *c->progs);
+    if (h) progs_free(c->progs);
+    c->progs = (Programme *)(nh + 1);
+  }
   Programme *p = &c->progs[c->nprogs++];
   memset(p, 0, sizeof *p);
   p->start = start; p->stop = stop;
@@ -185,76 +200,129 @@ void norm_name(const char *in, char *out, size_t size) {
   out[o] = 0;
 }
 
-static Channel *find_by_id(Channel *chs, int n, const char *cid) {
-  for (int i = 0; i < n; i++) {
-    if (chs[i].epg_id[0] && !strcmp(chs[i].epg_id, cid)) return &chs[i];
-    if (!chs[i].epg_id[0] && chs[i].id[0] && !strcmp(chs[i].id, cid)) return &chs[i];
+// Channels by guide id (their name-matched epg_id, else their tvg-id): a hash table of the first channel with each id,
+// and a chain from it to the others with the same id (a provider's SD/HD/FHD versions of one channel).
+typedef struct { Channel *chs; int *slot, *next, mask; } IdIndex;
+static const char *guide_key(const Channel *c) { return c->epg_id[0] ? c->epg_id : c->id; }
+static int idx_find(const IdIndex *x, const char *id) {
+  for (unsigned long h = hash_str(id) & x->mask;; h = (h + 1) & x->mask) {
+    int i = x->slot[h];
+    if (i < 0 || !strcmp(guide_key(&x->chs[i]), id)) return i;
   }
-  return NULL;
+}
+static void idx_add(IdIndex *x, int i) {
+  const char *id = guide_key(&x->chs[i]);
+  if (!id[0]) return;
+  for (unsigned long h = hash_str(id) & x->mask;; h = (h + 1) & x->mask) {
+    int j = x->slot[h];
+    if (j < 0) { x->slot[h] = i; x->next[i] = -1; return; }
+    if (j == i) return;
+    if (!strcmp(guide_key(&x->chs[j]), id)) { x->next[i] = x->next[j]; x->next[j] = i; return; }
+  }
 }
 
+time_t xmltv_last_stop;   // the end of the last programme in the guide read last (how far ahead it reaches)
+
+// Reads an XMLTV guide (plain or gzip) element by element, whatever its line breaks (some providers write a 30 MB
+// guide on a few hundred lines). Keeps programmes from now to 24 h ahead for the channels whose guide id matches;
+// channels sharing an id share the list. by_name: first match channels without an id by their display names.
 int load_xmltv(const char *path, Channel *chs, int n, int by_name) {
+  xmltv_last_stop = 0;
   gzFile f = gzopen(path, "rb");   // reads plain files too
   if (!f) return 0;
+  gzbuffer(f, 1 << 17);
   time_t now = time(NULL);
-  int kept = 0;
+  IdIndex x = { chs, NULL, NULL, 0 };
+  int cap = 1024; while (cap < n * 2) cap <<= 1;
+  size_t nn = n > 0 ? (size_t)n : 1;
+  x.mask = cap - 1; x.slot = malloc(cap * sizeof *x.slot); x.next = malloc(nn * sizeof *x.next);
+  for (int i = 0; i < cap; i++) x.slot[i] = -1;
+  for (int i = 0; i < n; i++) { x.next[i] = -1; idx_add(&x, i); }
   char (*norms)[64] = NULL;
   if (by_name) {   // names of channels still without a guide, normalised once
-    norms = calloc(n, sizeof *norms);
+    norms = calloc(nn, sizeof *norms);
     for (int i = 0; i < n; i++) if (!chs[i].nprogs && !chs[i].epg_id[0]) norm_name(chs[i].name, norms[i], sizeof norms[i]);
   }
-  Channel *ch = NULL; Programme p = {0}; int in_prog = 0, in_prog_any = 0, have_title = 0;
+  enum { CAP_NONE, CAP_TITLE, CAP_NAME } capturing = CAP_NONE;
+  char text[512]; size_t tlen = 0;
+  Programme p = {0}; int ch = -1, in_prog = 0, have_title = 0, in_channel = 0, kept = 0;
   char cur_channel[128] = "";
-  char line[8192];
-  while (gzgets(f, line, sizeof line)) {
-    char *t = strstr(line, "<programme");
-    if (t) {
-      char start[32], stop[32], cid[128];
-      attr(t, "start", start, sizeof start); attr(t, "stop", stop, sizeof stop); attr(t, "channel", cid, sizeof cid);
-      ch = find_by_id(chs, n, cid);
-      memset(&p, 0, sizeof p);
-      p.start = xmltv_time(start); p.stop = xmltv_time(stop);
-      in_prog = ch && p.stop > now && p.start < now + 24 * 3600;
-      in_prog_any = 1; have_title = 0; cur_channel[0] = 0;
-    }
-    char *cd = strstr(line, "<channel ");
-    if (cd) attr(cd, "id", cur_channel, sizeof cur_channel);
-    char *dn;
-    if (by_name && cur_channel[0] && !in_prog_any && (dn = strstr(line, "<display-name"))) {
-      char *gt = strchr(dn, '>'), *end = gt ? strstr(gt, "</display-name>") : NULL;
-      if (gt && end) {
-        char name[160]; size_t len = (size_t)(end - gt - 1) < sizeof name - 1 ? (size_t)(end - gt - 1) : sizeof name - 1;
-        memcpy(name, gt + 1, len); name[len] = 0; unescape(name);
-        char nn[64]; norm_name(name, nn, sizeof nn);
-        if (nn[0]) for (int i = 0; i < n; i++)
-          if (norms[i][0] && !strcmp(norms[i], nn)) { snprintf(chs[i].epg_id, sizeof chs[i].epg_id, "%s", cur_channel); norms[i][0] = 0; }
+  const size_t BUF = 1 << 18;
+  char *buf = malloc(BUF + 1); size_t len = 0;
+  for (;;) {
+    int r = gzread(f, buf + len, (unsigned)(BUF - len));
+    if (r > 0) len += (size_t)r;
+    size_t pos = 0;
+    for (;;) {
+      char *lt = memchr(buf + pos, '<', len - pos);
+      size_t text_end = lt ? (size_t)(lt - buf) : len;
+      if (capturing && text_end > pos) {   // the text of a title or display-name
+        size_t k = text_end - pos; if (k > sizeof text - 1 - tlen) k = sizeof text - 1 - tlen;
+        memcpy(text + tlen, buf + pos, k); tlen += k;
       }
-    }
-    char *ic = strstr(line, "<icon ");
-    if (ic) {
-      char src[256]; attr(ic, "src", src, sizeof src);
-      if (in_prog_any) snprintf(p.icon, sizeof p.icon, "%s", src);
-      else if (cur_channel[0])   // channel logos from the guide, for channels the playlist gave none
-        for (int i = 0; i < n; i++)
-          if (!chs[i].logo[0] && (!strcmp(chs[i].id, cur_channel) || !strcmp(chs[i].epg_id, cur_channel))) snprintf(chs[i].logo, sizeof chs[i].logo, "%s", src);
-    }
-    if (strstr(line, "</programme>")) {
-      if (have_title && ch) { add_programme(ch, p.start, p.stop, p.title, p.icon); kept++; }
-      in_prog = in_prog_any = have_title = 0;
-    }
-    char *ti;
-    if (in_prog && !have_title && (ti = strstr(line, "<title"))) {
-      char *gt = strchr(ti, '>'), *end = gt ? strstr(gt, "</title>") : NULL;
-      if (gt && end) {
-        size_t len = (size_t)(end - gt - 1) < sizeof p.title - 1 ? (size_t)(end - gt - 1) : sizeof p.title - 1;
-        memcpy(p.title, gt + 1, len); p.title[len] = 0; unescape(p.title);
-        have_title = 1;
+      if (!lt) { pos = len; break; }
+      char *gt = memchr(lt, '>', len - (size_t)(lt - buf));
+      if (!gt) { pos = (size_t)(lt - buf); break; }   // the rest of this tag comes with the next read
+      *gt = 0;
+      char *tag = lt + 1;
+      pos = (size_t)(gt + 1 - buf);
+      if (*tag == '?' || *tag == '!') continue;
+      int closing = *tag == '/'; if (closing) tag++;
+      size_t nl = strcspn(tag, " \t\r\n/");
+      #define IS(name) (nl == sizeof name - 1 && !memcmp(tag, name, nl))
+      if (IS("programme")) {
+        if (!closing) {
+          char start[32], stop[32], cid[128];
+          attr(tag, "start", start, sizeof start); attr(tag, "stop", stop, sizeof stop); attr(tag, "channel", cid, sizeof cid);
+          memset(&p, 0, sizeof p);
+          p.start = xmltv_time(start); p.stop = xmltv_time(stop);
+          if (p.stop > xmltv_last_stop) xmltv_last_stop = p.stop;
+          ch = cid[0] ? idx_find(&x, cid) : -1;
+          in_prog = ch >= 0 && p.stop > now && p.start < now + 24 * 3600;
+          have_title = 0; in_channel = 0;
+        } else {
+          if (in_prog && have_title) { add_programme(&chs[ch], p.start, p.stop, p.title, p.icon[0] ? p.icon : NULL); kept++; }
+          in_prog = 0; ch = -1;
+        }
+      } else if (IS("title")) {
+        if (!closing && in_prog && !have_title) { capturing = CAP_TITLE; tlen = 0; }
+        else if (closing && capturing == CAP_TITLE) {
+          text[tlen] = 0; unescape(text); snprintf(p.title, sizeof p.title, "%s", text); have_title = 1; capturing = CAP_NONE;
+        }
+      } else if (IS("channel")) {
+        if (!closing) { attr(tag, "id", cur_channel, sizeof cur_channel); in_channel = 1; }
+        else { in_channel = 0; cur_channel[0] = 0; }
+      } else if (IS("display-name")) {
+        if (!closing && by_name && in_channel && cur_channel[0]) { capturing = CAP_NAME; tlen = 0; }
+        else if (closing && capturing == CAP_NAME) {
+          text[tlen] = 0; unescape(text); capturing = CAP_NONE;
+          char nn[64]; norm_name(text, nn, sizeof nn);
+          if (nn[0]) for (int i = 0; i < n; i++)
+            if (norms[i][0] && !strcmp(norms[i], nn)) { snprintf(chs[i].epg_id, sizeof chs[i].epg_id, "%s", cur_channel); norms[i][0] = 0; idx_add(&x, i); }
+        }
+      } else if (IS("icon") && !closing) {
+        char src[256]; attr(tag, "src", src, sizeof src);
+        if (in_prog) snprintf(p.icon, sizeof p.icon, "%s", src);
+        else if (in_channel && cur_channel[0] && src[0])   // channel logos from the guide, for channels the playlist gave none
+          for (int i = idx_find(&x, cur_channel); i >= 0; i = x.next[i]) if (!chs[i].logo[0]) snprintf(chs[i].logo, sizeof chs[i].logo, "%s", src);
       }
+      #undef IS
     }
+    memmove(buf, buf + pos, len - pos); len -= pos;
+    if (len == BUF) len = 0;   // one tag bigger than the buffer: not a guide we can use, skip it
+    if (r <= 0) break;
   }
   gzclose(f);
-  free(norms);
-  for (int i = 0; i < n; i++) sort_programmes(&chs[i]);
+  free(buf); free(norms);
+  // sort, then share each list with the other channels that have the same id
+  for (int h = 0; h < cap; h++) {
+    int i = x.slot[h]; if (i < 0) continue;
+    sort_programmes(&chs[i]);
+    if (!chs[i].nprogs) continue;
+    for (int j = x.next[i]; j >= 0; j = x.next[j])
+      if (!chs[j].nprogs) { chs[j].progs = progs_share(chs[i].progs); chs[j].nprogs = chs[i].nprogs; }
+  }
+  free(x.slot); free(x.next);
   return kept;
 }
 

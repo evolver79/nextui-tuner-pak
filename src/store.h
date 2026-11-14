@@ -14,6 +14,7 @@ typedef struct {
   int suggest_favs;      // suggest a favourite after a lot of watching (off by default)
   int mine_az;           // your channels A-Z instead of playlist order
   int plain_tuning;      // 1: no snow/picture/hiss while a channel loads, just the channel info and LOADING
+  int hwdec;             // 1: H.264/H.265 on the video engine (hwdec.c), 0: always in software
   char pin[5];           // adult PIN, "" = none
   char last_channel[64]; // key of the channel watched last (Tuner starts on it)
   int setup_done;
@@ -45,5 +46,8 @@ void watch_add(const char *key, double seconds);   // records a viewing (counts 
 double watch_score(const char *key);               // faded seconds, 0 when never watched
 int recent_count(void);
 const char *recent_key(int i);                     // 0 = the most recent
+// The audio track chosen on a channel (LEFT/RIGHT while watching): its language (may be "") and position, -1 if none.
+int audio_pref_get(const char *key, char *lang, size_t n);
+void audio_pref_set(const char *key, const char *lang, int pos);
 int was_suggested(const char *key);                // favourite suggestions: each channel once
 void mark_suggested(const char *key);

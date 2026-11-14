@@ -124,6 +124,7 @@ void settings_defaults(Settings *s) {
   s->genres = (1u << G_COUNT) - 1;
   s->genres &= ~((1u << G_RELIGIOUS) | (1u << G_SHOP) | (1u << G_LEGISLATIVE) | (1u << G_ADULT));
   s->max_height = 720;
+  s->hwdec = 1;
 }
 
 void settings_load(Settings *s) {
@@ -143,6 +144,7 @@ void settings_load(Settings *s) {
     else if (!strcmp(k, "overlay")) s->overlay = atoi(v);
     else if (!strcmp(k, "theme")) s->theme = atoi(v);
     else if (!strcmp(k, "plain_tuning")) s->plain_tuning = atoi(v);
+    else if (!strcmp(k, "hwdec")) s->hwdec = atoi(v);
     else if (!strcmp(k, "mine_az")) s->mine_az = atoi(v);
     else if (!strcmp(k, "suggest_favs")) s->suggest_favs = atoi(v);
     else if (!strcmp(k, "free_off")) s->free_off = atoi(v);
@@ -158,8 +160,8 @@ void settings_load(Settings *s) {
 void settings_save(const Settings *s) {
   char p[600]; path(p, sizeof p, "settings.ini");
   FILE *f = fopen(p, "w"); if (!f) return;
-  fprintf(f, "languages=%s\ncountries=%s\ngenres=%x\nadult=%d\nmax_height=%d\noverlay=%d\ntheme=%d\nplain_tuning=%d\nmine_az=%d\nsuggest_favs=%d\nfree_off=%d\npin=%s\nlast_channel=%s\nsetup_done=%d\ncustom_m3u=%s\ncustom_xmltv=%s\n",
-          s->languages, s->countries, s->genres, s->adult, s->max_height, s->overlay, s->theme, s->plain_tuning, s->mine_az, s->suggest_favs, s->free_off, s->pin, s->last_channel, s->setup_done, s->custom_m3u, s->custom_xmltv);
+  fprintf(f, "languages=%s\ncountries=%s\ngenres=%x\nadult=%d\nmax_height=%d\noverlay=%d\ntheme=%d\nplain_tuning=%d\nhwdec=%d\nmine_az=%d\nsuggest_favs=%d\nfree_off=%d\npin=%s\nlast_channel=%s\nsetup_done=%d\ncustom_m3u=%s\ncustom_xmltv=%s\n",
+          s->languages, s->countries, s->genres, s->adult, s->max_height, s->overlay, s->theme, s->plain_tuning, s->hwdec, s->mine_az, s->suggest_favs, s->free_off, s->pin, s->last_channel, s->setup_done, s->custom_m3u, s->custom_xmltv);
   fclose(f);
 }
 
@@ -199,4 +201,39 @@ void mark_dead(const char *key) {
   if (i < 0) { dead.v = realloc(dead.v, (dead.n + 1) * sizeof *dead.v); i = dead.n++; snprintf(dead.v[i].key, sizeof dead.v[i].key, "%s", key); }
   dead.v[i].when = time(NULL);
   set_save(&dead);
+}
+
+// --- the audio track you chose per channel (audio.txt: key, language, position), found again by language first ------
+typedef struct { char key[64]; char lang[8]; int pos; } AudioPref;
+static AudioPref *aprefs; static int naprefs, aprefs_loaded;
+static void aprefs_load(void) {
+  if (aprefs_loaded) return;
+  aprefs_loaded = 1;
+  char p[600]; path(p, sizeof p, "audio.txt");
+  FILE *f = fopen(p, "r"); if (!f) return;
+  char line[160];
+  while (fgets(line, sizeof line, f)) {
+    AudioPref a = {0};
+    if (sscanf(line, "%63s %7s %d", a.key, a.lang, &a.pos) == 3) {
+      if (!strcmp(a.lang, "-")) a.lang[0] = 0;
+      aprefs = realloc(aprefs, (naprefs + 1) * sizeof *aprefs); aprefs[naprefs++] = a;
+    }
+  }
+  fclose(f);
+}
+int audio_pref_get(const char *key, char *lang, size_t n) {
+  aprefs_load();
+  for (int i = 0; i < naprefs; i++) if (!strcmp(aprefs[i].key, key)) { snprintf(lang, n, "%s", aprefs[i].lang); return aprefs[i].pos; }
+  if (n) lang[0] = 0;
+  return -1;
+}
+void audio_pref_set(const char *key, const char *lang, int pos) {
+  aprefs_load();
+  int i = 0; while (i < naprefs && strcmp(aprefs[i].key, key)) i++;
+  if (i == naprefs) { aprefs = realloc(aprefs, (naprefs + 1) * sizeof *aprefs); naprefs++; snprintf(aprefs[i].key, sizeof aprefs[i].key, "%s", key); }
+  snprintf(aprefs[i].lang, sizeof aprefs[i].lang, "%s", lang); aprefs[i].pos = pos;
+  char p[600]; path(p, sizeof p, "audio.txt");
+  FILE *f = fopen(p, "w"); if (!f) return;
+  for (int k = 0; k < naprefs; k++) fprintf(f, "%s %s %d\n", aprefs[k].key, aprefs[k].lang[0] ? aprefs[k].lang : "-", aprefs[k].pos);
+  fclose(f);
 }
