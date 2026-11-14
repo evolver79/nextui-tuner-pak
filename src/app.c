@@ -1,5 +1,5 @@
 // Tuner – IPTV Player: free TV for NextUI. Pluto TV, Samsung TV Plus and iptv-org channels for the languages and
-// countries chosen at first start, your own M3U playlists, favourites, a guide, and four looks (themes.c).
+// countries chosen at first start, your own M3U playlists, favourites, a guide, and seven looks (themes.c).
 #include <SDL2/SDL.h>
 #include <libavformat/avformat.h>
 #include <ctype.h>

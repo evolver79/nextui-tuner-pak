@@ -7,11 +7,18 @@ pick, shows what's on, and plays them with the snow, test cards and channel numb
   [iptv-org](https://github.com/iptv-org/iptv), and your own M3U playlists and Xtream Codes accounts.
 - **TV guide:** now/next on every channel that has one, and a guide grid. Guides come from the services themselves,
   [i.mjh.nz](https://i.mjh.nz) and [epgshare01](https://epgshare01.online) (national channels), or your own XMLTV.
-- **Four looks**, switched with L2/R2:
+- **Seven looks**, switched with L2/R2:
   - **CRT TV**: a 90s TV's on-screen menus over the live picture.
   - **Teletext**: pages, page numbers and coloured fastext labels.
   - **VCR**: the video recorder's blue screen.
   - **Cable guide**: listings on a purple panel under the live picture.
+  - **8-bit Quest**: a top-down adventure's HUD. A map of the list's pages, item boxes for the buttons, and LIFE
+    hearts that show the battery. A sword points at the channel.
+  - **16-bit RPG**: blue menu windows with a pointing hand, over the live picture. In the banner, a status bar shows
+    the time left of the programme.
+  - **Pocket**: an old green handheld's four-shade dot-matrix screen.
+
+  The game looks use an 8x8 pixel font and drawings made for Tuner, not art from any game.
 - **Tuning in:** snow over the programme's picture while a channel connects and a test card on long waits (or, if
   you prefer, a plain screen with the channel info and LOADING), and a plain-words message when a channel can't be
   played.
@@ -29,6 +36,10 @@ Tested on the TrimUI Brick (`tg5040`).
 | ![VCR channel list](.github/resources/screenshots/vcr.png) | ![Cable guide channel list](.github/resources/screenshots/cable-list.png) |
 | **TV guide (CRT TV)** | **TV guide (Cable guide)** |
 | ![CRT TV guide grid](.github/resources/screenshots/crt-guide.png) | ![Cable guide grid](.github/resources/screenshots/cable-guide.png) |
+| **8-bit Quest** | **16-bit RPG** |
+| ![8-bit Quest channel list](.github/resources/screenshots/quest-list.png) | ![16-bit RPG channel list](.github/resources/screenshots/rpg-list.png) |
+| **Pocket** | |
+| ![Pocket channel list](.github/resources/screenshots/pocket-list.png) | |
 | **Search** | |
 | ![Search keyboard](.github/resources/screenshots/crt-search.png) | |
 
