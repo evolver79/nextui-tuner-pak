@@ -1,0 +1,3 @@
+[submodule "ui/dot"]
+	path = ui/dot
+	url = https://github.com/evolver79/nextui-dotui.git

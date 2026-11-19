@@ -15,7 +15,6 @@
 #include <time.h>
 #include "channels.h"
 #include "store.h"
-#include "tt.h"
 #include "tv.h"
 #include "ui.h"
 #include "hwdec.h"
@@ -420,7 +419,7 @@ static void draw_tuning(SDL_Renderer *r, SDL_Texture *img, int iw, int ih, int l
   static uint32_t seed = 99;
   if (since_ms > 6000) {   // a long wait: the test card, as stations showed between programmes
     draw_testcard();
-    if ((since_ms / 600) % 2) tt_draw((SCREEN_W - tt_text_width(30, "SEARCHING FOR SIGNAL")) / 2, SCREEN_H - 90, 30, "SEARCHING FOR SIGNAL", TT_PALETTE[TT_WHITE]);
+    ui_searching();
     return;
   }
   if (img) {
@@ -608,21 +607,6 @@ int tv_nerd(char out[][96], int max) {
   return n;
 }
 
-// A line of text centred on the screen, shortened with "..." when it is wider than the screen less a margin.
-static void centre(const char *s, int h, int y, SDL_Color c) {
-  char b[256]; snprintf(b, sizeof b, "%s", s);
-  if (tt_text_width(h, b) > SCREEN_W - 80) {
-    size_t n = strlen(b);
-    while (n > 0) {
-      do n--; while (n > 0 && ((unsigned char)b[n] & 0xC0) == 0x80);   // back one whole character
-      while (n > 0 && b[n - 1] == ' ') n--;
-      memcpy(b + n, "...", 4);
-      if (tt_text_width(h, b) <= SCREEN_W - 80) break;
-    }
-  }
-  tt_draw((SCREEN_W - tt_text_width(h, b)) / 2, y, h, b, c);
-}
-
 // Watchdog, start buffer and A/V sync, then the picture (or the tuning screen, or NO SIGNAL) and the overlay.
 void tv_render(void) {
   if (!cur_ch) return;
@@ -659,19 +643,15 @@ void tv_render(void) {
     else if (s->audio_started) SDL_PauseAudioDevice(audio, 1);
   }
   if (no_signal) {
-    SDL_SetRenderDrawColor(ren, 0, 0, 170, 255); SDL_RenderClear(ren);   // VCR blue
-    centre("NO SIGNAL", 64, SCREEN_H / 2 - 110, TT_PALETTE[TT_WHITE]);
-    centre(cur_ch->name, 32, SCREEN_H / 2 - 20, TT_PALETTE[TT_YELLOW]);
-    centre(fail_reason, 26, SCREEN_H / 2 + 30, TT_PALETTE[TT_WHITE]);
-    centre("Up/down: another channel", 22, SCREEN_H / 2 + 90, TT_PALETTE[TT_CYAN]);
+    ui_no_signal(cur_ch->name, fail_reason);
   } else if (!s->connected || !playing) {
     if (!set->plain_tuning) {   // plain: a black screen; the app draws the channel info and LOADING over it
       draw_tuning(ren, itex, iw, ih, ilogo, snow, SDL_GetTicks() - changed_at);
       if (!s->audio_started) { SDL_PauseAudioDevice(audio, 0); snow_audio(audio); }
     }
     if (retries) {   // reconnecting: say so over the snow
-      char m[48]; snprintf(m, sizeof m, "SIGNAL LOST - RETRYING (%d/3)", retries);
-      centre(m, 28, 40, TT_PALETTE[TT_YELLOW]);
+      char m[48]; snprintf(m, sizeof m, "Signal lost · retrying (%d/3)", retries);
+      ui_notice(m);
     }
   } else {
     // Clock: the audio being heard (end of queued audio minus what's still queued). If the audio runs dry (or there

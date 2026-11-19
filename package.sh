@@ -5,5 +5,6 @@ set -e
 cd "$(dirname "$0")"
 mkdir -p dist
 rm -f dist/Tuner.pak.zip
-(cd Tuner.pak && zip -q -X ../dist/Tuner.pak.zip tuner launch.sh bedstead.otf playlists.example.txt LICENSE-cJSON LICENSE-ffmpeg-LGPL)
+rm -rf Tuner.pak/fonts && cp -r ui/dot/fonts Tuner.pak/fonts   # Dot's fonts (ui/dot is a submodule)
+(cd Tuner.pak && zip -q -X -r ../dist/Tuner.pak.zip tuner launch.sh fonts playlists.example.txt LICENSE-cJSON LICENSE-ffmpeg-LGPL)
 unzip -l dist/Tuner.pak.zip

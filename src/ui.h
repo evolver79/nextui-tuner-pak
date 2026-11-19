@@ -21,7 +21,7 @@ typedef struct {
   char help[96];            // a line under the title
   Row *rows; int nrows;
   int cursor, top;          // highlighted row, first row shown
-  const char *hints[4];     // button labels: A, B, Y, X/START
+  const char *hints[4];     // button labels for the dock: "A Watch", "B Back", ...
   char status[128];         // loading message / position
   Channel **chs; int nchs;  // PAGE_GUIDE
   int tv_on;                // a channel is playing behind the menu
@@ -40,6 +40,12 @@ typedef struct {
 } Theme;
 
 extern const Theme *THEMES[]; extern const int NTHEMES;
-void themes_init(SDL_Renderer *r);
-void draw_testcard(void);
-void themes_still(int on);   // screenshots: long names don't tick along   // the test card (also shown by the TV engine on long waits)
+int  themes_init(SDL_Renderer *r, const char *pak_dir);   // the Dot UI, fonts from <pak>/fonts; 0 on success
+void ui_frame(void);          // once per frame, before anything is drawn
+void themes_still(int on);    // screenshots: nothing blinks
+void draw_testcard(void);     // the test card (also shown by the TV engine on long waits)
+// The TV engine's own screens, in the same look:
+void ui_searching(void);                                  // over the test card on a long wait
+void ui_no_signal(const char *name, const char *reason);  // the channel couldn't be played
+void ui_notice(const char *msg);                          // a line at the top, over the picture (retrying)
+void ui_nerd(char lines[][96], int n);                    // stats for nerds: "LABEL|value" lines
