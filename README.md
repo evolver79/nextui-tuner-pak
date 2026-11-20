@@ -32,7 +32,7 @@ Tested on the TrimUI Brick (`tg5040`).
 |---|---|
 | ![Front page: Favourites, Most watched, Recently watched, Channels by genre and All channels](.github/resources/screenshots/index.png) | ![All channels with what's on now and the next programme](.github/resources/screenshots/guide.png) |
 | ![Channel info over the picture: what's on, how far in, and what's next](.github/resources/screenshots/banner.png) | ![All channels with logos](.github/resources/screenshots/list.png) |
-| ![Channels by genre](.github/resources/screenshots/genres.png) | ![Search with the on-screen keyboard](.github/resources/screenshots/search.png) |
+| ![Channels by genre](.github/resources/screenshots/genres.png) | ![Search with the on-screen keyboard](.github/resources/screenshots/search-keyboard.png) |
 | ![Settings](.github/resources/screenshots/settings.png) | ![Setup: picking countries](.github/resources/screenshots/setup.png) |
 
 Drawn by Tuner's screenshot mode with nothing tuned, so the channel info sits on black; on the Brick the live

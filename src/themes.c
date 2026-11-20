@@ -137,7 +137,7 @@ static void pin_page(const Page *p) {
 
 static void keys_page(const Page *p) {
   dot_header(D, p->title, p->status);
-  dot_card(D, 40, 96, 944, 528);
+  dot_card(D, 40, 96, 944, 506);
   dot_rect(D, 70, 120, 884, 72, 26, DOT_RAISED, 255);   // the text typed so far
   char shown[80]; snprintf(shown, sizeof shown, "%s_", p->input);
   dot_text(D, DOT_VALUE_L, shown, 100, 156 - dot_line_h(D, DOT_VALUE_L) / 2, DOT_TEXT, DOT_LEFT, 830);
@@ -148,7 +148,7 @@ static void keys_page(const Page *p) {
     if (*q == '<') { q++; while (*q && *q != '>' && n < 14) key[n++] = *q++; if (*q == '>') q++; }
     else key[n++] = *q++;
     key[n] = 0;
-    int kw = n > 1 ? 118 : 76, x = 70 + col, y = 222 + row * 92, sel = k == p->cursor;   // 10 keys, or 6 + 3 wide, fill 884
+    int kw = n > 1 ? 111 : 81, x = 70 + col, y = 222 + row * 92, sel = k == p->cursor;   // 10 keys (882) or 6 + 3 wide (883) fill the 884 inside the card
     dot_rect(D, x, y, kw, 80, 26, sel ? DOT_PAPER : DOT_RAISED, 255);
     int st = n > 1 ? DOT_LABEL_T : DOT_TITLE;
     dot_text(D, st, key, x + kw / 2, y + (80 - dot_line_h(D, st)) / 2, sel ? DOT_INK : DOT_TEXT, DOT_CENTER, 0);
