@@ -8,13 +8,9 @@ pick, shows what's on, and plays them with the snow, test cards and channel numb
 - **TV guide:** now and next on every channel that has one, and a listings guide. Guides come from the services
   themselves, [i.mjh.nz](https://i.mjh.nz) and [epgshare01](https://epgshare01.online) (national channels), or your
   own XMLTV and your Xtream provider's guide (kept for a day, read quickly even when it's tens of MB).
-- **Two looks**, switched with L2/R2:
-  - **VCR**: a video recorder's on-screen display in big blocky letters, over the live picture (or the blue screen
-    when nothing plays). Holding up or down winds the tape (FF/REW with tracking noise), a new channel comes in with
-    tracking noise, the banner has a tape counter, and loading is TRACKING with 12:00 blinking.
-  - **Teletext**: pages on the 40x25 grid. A page you open is searched for first (the header's page counter rolls by)
-    and then arrives row by row. A block-graphics masthead on P100, a real listings page on P300, coloured fastext
-    labels, and the channel info as newsflash boxes over the picture.
+- **Drawn with [Dot](https://github.com/evolver79/nextui-dotui)**, the shared look of Kino, Musicdisk and Tuner: menus
+  and lists as black cards on a grey ground, or over the live channel while one plays; the channel that's on is
+  marked green, and the time and channel numbers are in dot-matrix figures.
 - **Hardware video decoding:** H.264 and H.265 are decoded on the Brick's video engine, which takes about a fifth of
   one CPU core where software decoding takes three (Settings > Hardware decoding; anything else stays in software).
 - **Audio tracks:** on channels with several (often marked MULTI), Tuner picks the one in your languages; LEFT/RIGHT
@@ -32,17 +28,15 @@ Tested on the TrimUI Brick (`tg5040`).
 
 ## Screenshots
 
-| VCR | Teletext |
+| | |
 |---|---|
-| ![VCR channel list](.github/resources/screenshots/vcr-list.png) | ![Teletext front page](.github/resources/screenshots/teletext-front.png) |
-| ![VCR guide](.github/resources/screenshots/vcr-guide.png) | ![Teletext guide](.github/resources/screenshots/teletext-guide.png) |
-| ![VCR channel info](.github/resources/screenshots/vcr-banner.png) | ![Teletext channel list](.github/resources/screenshots/teletext-list.png) |
-| ![VCR front page](.github/resources/screenshots/vcr-front.png) | ![Teletext channel info](.github/resources/screenshots/teletext-banner.png) |
-| **Search** | |
-| ![Search keyboard](.github/resources/screenshots/search.png) | |
+| ![Front page: Favourites, Most watched, Recently watched, Channels by genre and All channels](.github/resources/screenshots/index.png) | ![All channels with what's on now and the next programme](.github/resources/screenshots/guide.png) |
+| ![Channel info over the picture: what's on, how far in, and what's next](.github/resources/screenshots/banner.png) | ![All channels with logos](.github/resources/screenshots/list.png) |
+| ![Channels by genre](.github/resources/screenshots/genres.png) | ![Search with the on-screen keyboard](.github/resources/screenshots/search.png) |
+| ![Settings](.github/resources/screenshots/settings.png) | ![Setup: picking countries](.github/resources/screenshots/setup.png) |
 
-Drawn by Tuner's screenshot mode with nothing tuned, so the test card stands in for the picture; in the VCR look the
-live channel plays behind the menus instead.
+Drawn by Tuner's screenshot mode with nothing tuned, so the channel info sits on black; on the Brick the live
+channel plays behind it, and behind the menus.
 
 ## Install
 
@@ -65,12 +59,11 @@ background once a day (guides every few hours) and kept on the card, so Tuner al
 | Y | Favourite | Favourite |
 | X | Hide channel | Previous channel |
 | L1/R1 | Page up/down | Picture overlay (scanlines, CRT) |
-| L2/R2 | Look | Look |
 | START | Back to the channel you were watching | |
 | SELECT | | Stats for nerds |
 | MENU | Quit | Quit |
 
-In the VCR look, resting on a channel in a list tunes it in behind the menu.
+Resting on a channel in a list tunes it in behind the menu.
 
 ## Most watched and Recently watched
 
@@ -131,9 +124,7 @@ written in conversation with it, and tested on a real TrimUI Brick.
   Its unmodified source is at ffmpeg.org, the exact configuration is `build/build-ffmpeg.sh`, and this repository has
   everything needed to rebuild and relink Tuner.
 - [cJSON](https://github.com/DaveGamble/cJSON) is MIT (`src/vendor/LICENSE-cJSON`).
-- The [Bedstead](https://bjh21.me.uk/bedstead/) font is public domain.
-- The VCR look's 8x8 pixel font is [font8x8](https://github.com/dhepper/font8x8) by Daniel Hepper, public domain
-  (after the public domain IBM VGA fonts).
+- The fonts (Doto, Geist) are SIL OFL.
 - Channel lists: [iptv-org](https://github.com/iptv-org/iptv) and [i.mjh.nz](https://i.mjh.nz); guides also from
   [epgshare01](https://epgshare01.online).
 
