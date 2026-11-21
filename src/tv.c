@@ -473,10 +473,75 @@ static ImageJob *ijob;
 static SDL_Texture *itex; static int iw, ih, ilogo;
 static int retries, no_signal, playing;
 static const char *fail_reason = "";   // why the channel gave up, in plain words
-static Uint32 started_at, changed_at;
+static Uint32 started_at, changed_at, shown_at;   // shown_at: ticks of the last new picture (tv_buffering)
 static double wall_clock, video_offset; static Uint64 wall_at;
 static int osd_frames, osd_drops; static Uint32 osd_at; static double osd_fps;
 static double nerd_av, nerd_dec_fps, nerd_kbps, nerd_loop_fps; static int nerd_loops, nerd_dec_last; static long long nerd_bytes_last;
+
+// --- Crop black borders (Settings, L2/R2 while watching): a 4:3 film pillarboxed in a 16:9 feed gets black on all
+// four sides of the Brick's 4:3 screen. A few times a second the shown frame's luma is sampled for black bars; a
+// crop that holds steady for a while is applied, one that shows less bar is applied at once, so a dark scene can't
+// zoom the picture for long and an ad in full 16:9 is never cut. Bars are cropped evenly on both sides (the
+// smaller of the two), so a logo or ticker in one bar never makes the picture lopsided.
+#define CROP_THR 32          // luma at or below this is black (limited-range black is 16, plus noise)
+#define CROP_SAMPLES 48      // samples per row or column tested
+#define CROP_LIT 3           // ... of which this many may be bright (a channel logo or ticker in the bar)
+#define CROP_EVERY_MS 250
+#define CROP_GROW 16         // samples (4 s) a bigger crop must hold before it is applied
+#define CROP_SHRINK 2        // samples (0.5 s) for a smaller one
+typedef struct { int l, r, t, b; } Crop;
+static Crop crop_on, crop_cand; static int crop_n, crop_w, crop_h; static Uint32 crop_at;
+
+static int crop_row_black(const uint8_t *y, int ls, int row, int x0, int x1) {
+  int lit = 0;
+  for (int i = 0; i < CROP_SAMPLES; i++) if (y[row * ls + x0 + (x1 - x0 - 1) * i / (CROP_SAMPLES - 1)] > CROP_THR && ++lit > CROP_LIT) return 0;
+  return 1;
+}
+static int crop_col_black(const uint8_t *y, int ls, int col, int y0, int y1) {
+  int lit = 0;
+  for (int i = 0; i < CROP_SAMPLES; i++) if (y[(y0 + (y1 - y0 - 1) * i / (CROP_SAMPLES - 1)) * ls + col] > CROP_THR && ++lit > CROP_LIT) return 0;
+  return 1;
+}
+// The black bars of a yuv420p frame, or -1 when the frame is (nearly) all black and says nothing.
+static int crop_detect(const AVFrame *f, Crop *c) {
+  const uint8_t *y = f->data[0]; int ls = f->linesize[0], w = f->width, h = f->height;
+  if (w < 64 || h < 64) return -1;
+  int lit = 0;   // a black or near-black frame (a fade, a night scene) gives no answer
+  for (int gy = 1; gy < 16; gy++) for (int gx = 1; gx < 16; gx++) lit += y[(h * gy / 16) * ls + w * gx / 16] > CROP_THR;
+  if (lit < 8) return -1;
+  int t = 0, b = 0, l = 0, r = 0;
+  while (t < h / 3 && crop_row_black(y, ls, t, 0, w)) t++;
+  while (b < h / 3 && crop_row_black(y, ls, h - 1 - b, 0, w)) b++;
+  while (l < w / 3 && crop_col_black(y, ls, l, t, h - b)) l++;
+  while (r < w / 3 && crop_col_black(y, ls, w - 1 - r, t, h - b)) r++;
+  int v = t < b ? t : b, hz = l < r ? l : r;
+  if (v < h / 50) v = 0;     // a thin edge isn't worth a zoom
+  if (hz < w / 50) hz = 0;
+  c->t = c->b = v & ~1; c->l = c->r = hz & ~1;   // even: the chroma planes are half size
+  return 0;
+}
+static int crop_close(int a, int b, int dim) { int tol = dim / 100 > 4 ? dim / 100 : 4; return abs(a - b) <= tol; }
+static void crop_reset(void) { memset(&crop_on, 0, sizeof crop_on); memset(&crop_cand, 0, sizeof crop_cand); crop_n = crop_w = crop_h = 0; }
+// Called with each frame about to be shown.
+static void crop_update(const AVFrame *f) {
+  if (!set->autocrop) { crop_reset(); return; }
+  if (f->width != crop_w || f->height != crop_h) { crop_reset(); crop_w = f->width; crop_h = f->height; }   // another variant
+  Uint32 now = SDL_GetTicks();
+  if (now - crop_at < CROP_EVERY_MS) return;
+  crop_at = now;
+  Crop d;
+  if (crop_detect(f, &d) < 0) return;
+  int w = f->width, h = f->height;
+  if (crop_close(d.l, crop_cand.l, w) && crop_close(d.t, crop_cand.t, h)) crop_n++;
+  else { crop_cand = d; crop_n = 1; }
+  int less = (crop_cand.l < crop_on.l && !crop_close(crop_cand.l, crop_on.l, w)) ||   // picture showing where the crop cuts
+             (crop_cand.t < crop_on.t && !crop_close(crop_cand.t, crop_on.t, h));
+  int same = crop_close(crop_cand.l, crop_on.l, w) && crop_close(crop_cand.t, crop_on.t, h);
+  if (less ? crop_n >= CROP_SHRINK : !same && crop_n >= CROP_GROW) {
+    crop_on = crop_cand;
+    fprintf(stderr, "crop: %dx%d -> %dx%d\n", w, h, w - crop_on.l - crop_on.r, h - crop_on.t - crop_on.b);
+  }
+}
 
 void tv_setup(SDL_Renderer *r, SDL_AudioDeviceID a, Settings *st) {
   ren = r; audio = a; set = st;
@@ -491,7 +556,7 @@ void tv_tune(Channel *c) {
   if (itex) { SDL_DestroyTexture(itex); itex = NULL; }
   SDL_PauseAudioDevice(audio, 1); SDL_ClearQueuedAudio(audio);
   cur_ch = c;
-  retries = no_signal = playing = 0; wall_at = 0; video_offset = 0;
+  retries = no_signal = playing = 0; wall_at = 0; video_offset = 0; shown_at = 0; crop_reset();
   started_at = changed_at = SDL_GetTicks();
   if (!c) { if (video) { SDL_DestroyTexture(video); video = NULL; } return; }
   s = start_stream(c, audio);
@@ -502,6 +567,13 @@ void tv_tune(Channel *c) {
 Channel *tv_channel(void) { return cur_ch; }
 int tv_state(void) { return !cur_ch ? TV_OFF : no_signal ? TV_NO_SIGNAL : playing ? TV_PLAYING : TV_TUNING; }
 Uint32 tv_tuned_ms(void) { return SDL_GetTicks() - changed_at; }
+int tv_retries(void) { return cur_ch && !no_signal ? retries : 0; }
+// Playing, but the stream has run dry: no new picture for a second and no sound left to play.
+int tv_buffering(void) {
+  if (!cur_ch || !s || no_signal || !playing || !shown_at || SDL_GetTicks() - shown_at < 1000) return 0;
+  SDL_LockMutex(s->lock); int frames = s->count; SDL_UnlockMutex(s->lock);
+  return !frames && (!s->has_audio || SDL_GetQueuedAudioSize(audio) < AUDIO_RATE * 4 / 20);
+}
 void tv_overlay_step(int dir) { set->overlay = (set->overlay + dir + NOVERLAYS) % NOVERLAYS; settings_save(set); }
 const char *tv_overlay_name(void) { return OVERLAY_NAMES[set->overlay % NOVERLAYS]; }
 // The device: CPU load (from /proc/stat) and temperature, read once a second while the panel is up; the Wi-Fi
@@ -586,6 +658,8 @@ int tv_nerd(char out[][96], int max) {
   double aq = (double)SDL_GetQueuedAudioSize(audio) / (AUDIO_RATE * 4);
   LINE("CHANNEL|%.40s (%s)", cur_ch->name, cur_ch->source);
   LINE("VIDEO|%s %dx%d%s  %.2f fps  %s", s->vcodec[0] ? s->vcodec : "-", w, h, sar != 1.0 && sar > 0 ? " (non-square)" : "", s->vfps, s->hw ? "HARDWARE" : "software");
+  if (set->autocrop && crop_w == w && crop_h == h && (crop_on.l || crop_on.t)) LINE("CROP|%dx%d (black borders cut)", w - crop_on.l - crop_on.r, h - crop_on.t - crop_on.b);
+  else LINE("CROP|%s", set->autocrop ? "none needed" : "off");
   LINE("FRAMES|decoded %.1f/s  shown %.1f/s  dropped %d", nerd_dec_fps, osd_fps, osd_drops);
   LINE("SYNC|A/V %+.0f ms  jumps %d  render %.0f/s", nerd_av * 1000, st_jumps_total, nerd_loop_fps);
   LINE("QUEUES|frames %d/%d  packets %d  audio %.0f ms", q, VQ, vp, aq * 1000);
@@ -649,8 +723,8 @@ void tv_render(void) {
       draw_tuning(ren, itex, iw, ih, ilogo, snow, SDL_GetTicks() - changed_at);
       if (!s->audio_started) { SDL_PauseAudioDevice(audio, 0); snow_audio(audio); }
     }
-    if (retries) {   // reconnecting: say so over the snow
-      char m[48]; snprintf(m, sizeof m, "Signal lost · retrying (%d/3)", retries);
+    if (retries && !set->plain_tuning) {   // reconnecting: say so over the snow (plain: the app says it)
+      char m[48]; snprintf(m, sizeof m, "Signal lost · reconnecting (%d/3)", retries);
       ui_notice(m);
     }
   } else {
@@ -689,7 +763,7 @@ void tv_render(void) {
       if (show) { av_frame_free(&show); st_dropped++; osd_drops++; }
       show = s->frames[s->head]; s->head = (s->head + 1) % VQ; s->count--;
     }
-    int w = s->w, h = s->h; double sar = s->sar;
+    int h = s->h; double sar = s->sar;
     SDL_UnlockMutex(s->lock);
     if (show) {
       if (!video || tex_w != show->width || tex_h != show->height) {
@@ -700,13 +774,17 @@ void tv_render(void) {
       Uint64 t = SDL_GetPerformanceCounter();
       SDL_UpdateYUVTexture(video, NULL, show->data[0], show->linesize[0], show->data[1], show->linesize[1], show->data[2], show->linesize[2]);
       st_upload_ms += (SDL_GetPerformanceCounter() - t) * 1000.0 / SDL_GetPerformanceFrequency();
+      crop_update(show); shown_at = SDL_GetTicks();
       av_frame_free(&show); st_shown++; osd_frames++;
     }
-    if (video && h) {  // fit to the 4:3 screen, letterboxing 16:9
-      double aspect = (double)w * sar / h, sw = SCREEN_W, sh = SCREEN_W / aspect;
+    if (video && h) {  // fit to the 4:3 screen, letterboxing 16:9 (after cropping black bars, when that's on)
+      SDL_Rect src = { 0, 0, tex_w, tex_h };
+      if (set->autocrop && crop_w == tex_w && crop_h == tex_h)
+        src = (SDL_Rect){ crop_on.l, crop_on.t, tex_w - crop_on.l - crop_on.r, tex_h - crop_on.t - crop_on.b };
+      double aspect = (double)src.w * sar / src.h, sw = SCREEN_W, sh = SCREEN_W / aspect;
       if (sh > SCREEN_H) { sh = SCREEN_H; sw = SCREEN_H * aspect; }
       SDL_Rect dst = { (int)((SCREEN_W - sw) / 2), (int)((SCREEN_H - sh) / 2), (int)sw, (int)sh };
-      SDL_RenderCopy(ren, video, NULL, &dst);
+      SDL_RenderCopy(ren, video, &src, &dst);
     }
   }
   if (SDL_GetTicks() - osd_at >= 1000) { osd_fps = osd_frames * 1000.0 / (SDL_GetTicks() - osd_at + 1); osd_frames = 0; osd_at = SDL_GetTicks(); }

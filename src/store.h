@@ -15,6 +15,7 @@ typedef struct {
   int mine_az;           // your channels A-Z instead of playlist order
   int plain_tuning;      // 1: no snow/picture/hiss while a channel loads, just the channel info and LOADING
   int hwdec;             // 1: H.264/H.265 on the video engine (hwdec.c), 0: always in software
+  int autocrop;          // 1: crop black borders (a 4:3 film pillarboxed in a 16:9 feed fills the screen)
   char pin[5];           // adult PIN, "" = none
   char last_channel[64]; // key of the channel watched last (Tuner starts on it)
   int setup_done;

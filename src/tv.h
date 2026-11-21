@@ -10,6 +10,8 @@ void tv_tune(Channel *c);          // NULL switches off
 Channel *tv_channel(void);
 int tv_state(void);
 Uint32 tv_tuned_ms(void);
+int tv_retries(void);              // reconnect attempts so far (0-3) for the channel being tuned
+int tv_buffering(void);            // playing, but the stream has run dry (picture frozen, no sound)
 void tv_render(void);
 void tv_overlay_step(int dir);
 const char *tv_overlay_name(void);

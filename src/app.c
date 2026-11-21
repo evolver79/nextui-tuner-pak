@@ -171,7 +171,7 @@ static const MenuItem INDEX_ITEMS[] = { {"Favourites", 101}, {"Most watched", 10
                                         {"Guide", 300}, {"Search", 400}, {"Settings", 900} };
 #define NINDEX 9
 static int index_of(int page) { for (int i = 0; i < NINDEX; i++) if (INDEX_ITEMS[i].page == page) return i; return 0; }
-#define NSETTINGS 16
+#define NSETTINGS 17
 static void setting_row(int i, Row *r) {
   memset(r, 0, sizeof *r);
   switch (i) {
@@ -190,7 +190,8 @@ static void setting_row(int i, Row *r) {
     case 12: snprintf(r->text, sizeof r->text, "Free channels"); snprintf(r->detail, sizeof r->detail, "%s", set.free_off ? "OFF (only your playlists)" : "ON"); break;
     case 13: snprintf(r->text, sizeof r->text, "Suggest favourites"); snprintf(r->detail, sizeof r->detail, "%s", set.suggest_favs ? "ON" : "OFF"); break;
     case 14: snprintf(r->text, sizeof r->text, "Hardware decoding"); snprintf(r->detail, sizeof r->detail, "%s", set.hwdec ? "ON" : "OFF"); break;
-    case 15: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
+    case 15: snprintf(r->text, sizeof r->text, "Crop black borders"); snprintf(r->detail, sizeof r->detail, "%s  (L2/R2)", set.autocrop ? "AUTO" : "OFF"); break;
+    case 16: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
   }
 }
 
@@ -384,6 +385,8 @@ static void leave_watch(void) {
   cursor = watch_index < nview ? watch_index : nview - 1; keep_visible(nview);
 }
 
+static void toggle_crop(void) { set.autocrop = !set.autocrop; settings_save(&set); say(set.autocrop ? "Crop black borders: auto" : "Crop black borders: off"); }
+
 static void ask_pin(int setting, Screen ret) { pin_setting = setting; pin_return = ret; pin_pos = 0; memset(pin_digits, 0, sizeof pin_digits); screen = SCR_PIN; }
 static void pin_done(void) {
   char entered[5]; for (int i = 0; i < 4; i++) entered[i] = (char)('0' + pin_digits[i]); entered[4] = 0;
@@ -405,6 +408,7 @@ static void on_button(int b) {
       if (b == BTN_A) banner_until = SDL_GetTicks() < banner_until ? 0 : 0xFFFFFFFFu;
       if (b == BTN_Y) { toggle_fav(view[watch_index]->key); say(is_fav(view[watch_index]->key) ? "Favourite" : "Not a favourite"); }
       if (b == BTN_L1 || b == BTN_R1) { tv_overlay_step(b == BTN_R1 ? 1 : -1); say(tv_overlay_name()); }
+      if (b == BTN_L2 || b == BTN_R2) toggle_crop();
       if (b == BTN_SELECT) show_osd = !show_osd;
       if (b == BTN_LEFT || b == BTN_RIGHT) { char l[64]; tv_audio_step(b == BTN_RIGHT ? 1 : -1, l, sizeof l); say(l); }
       if (b == BTN_X && prev_index >= 0 && prev_index < nview) tune_view(prev_index);   // last channel
@@ -460,7 +464,7 @@ static void on_button(int b) {
       break;
     case SCR_SETTINGS:
       if (step) { cursor = (cursor + step + NSETTINGS) % NSETTINGS; keep_visible(NSETTINGS); }
-      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 5 || cursor == 10 || cursor == 11 || cursor == 12 || cursor == 13 || cursor == 14))) {
+      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 5 || cursor == 10 || cursor == 11 || cursor == 12 || cursor == 13 || cursor == 14 || cursor == 15))) {
         int dir = b == BTN_LEFT ? -1 : 1;
         if (cursor <= 2) { edit_kind = (EditKind)cursor; screen = SCR_EDIT; cursor = top = 0; }
         else if (cursor == 3) { set.adult = !set.adult; dirty_sources = 1; settings_save(&set); }
@@ -479,7 +483,8 @@ static void on_button(int b) {
         else if (cursor == 12) { set.free_off = !set.free_off; settings_save(&set); dirty_sources = 1; }
         else if (cursor == 13) { set.suggest_favs = !set.suggest_favs; settings_save(&set); }
         else if (cursor == 14) { set.hwdec = !set.hwdec; tv_hwdec(set.hwdec); settings_save(&set); say(set.hwdec ? "Hardware decoding on" : "Hardware decoding off"); }
-        else if (cursor == 15) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
+        else if (cursor == 15) toggle_crop();
+        else if (cursor == 16) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
       }
       if (b == BTN_X && cursor == 9 && set.pin[0]) { set.pin[0] = 0; settings_save(&set); say("PIN removed"); }
       if (b == BTN_B) { screen = SCR_INDEX; cursor = index_of(900); top = 0; if (dirty_sources) { dirty_sources = 0; start_loading(0); } }
@@ -714,9 +719,15 @@ int main(int argc, char **argv) {
     if (screen == SCR_WATCH) {
       int plain_loading = set.plain_tuning && tv_state() == TV_TUNING;
       if ((plain_loading || SDL_GetTicks() < banner_until) && nview) theme()->banner(view[watch_index], watch_index + 1);
-      if (plain_loading) {   // plain tuning screen: the channel info stays up with LOADING, in the theme's style
-        static const char *dots[] = { "Loading", "Loading.", "Loading..", "Loading..." };
-        theme()->toast(dots[(SDL_GetTicks() / 400) % 4], 1);
+      // plain tuning screen: the channel info stays up with LOADING (or RECONNECTING), in the theme's style; and
+      // BUFFERING over a frozen picture when the stream runs dry while playing
+      if (plain_loading || tv_buffering()) {
+        static const char *dots[] = { "", ".", "..", "..." };
+        char m[48]; int r = tv_retries();
+        if (!plain_loading) snprintf(m, sizeof m, "Buffering%s", dots[(SDL_GetTicks() / 400) % 4]);
+        else if (r) snprintf(m, sizeof m, "Reconnecting (%d/3)%s", r, dots[(SDL_GetTicks() / 400) % 4]);
+        else snprintf(m, sizeof m, "Loading%s", dots[(SDL_GetTicks() / 400) % 4]);
+        theme()->toast(m, 1);
       }
       if (show_osd) {   // stats for nerds (SELECT)
         char l[12][96]; int n = tv_nerd(l, 12);

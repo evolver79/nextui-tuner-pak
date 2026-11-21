@@ -64,6 +64,7 @@ are kept in `.userdata/tg5040/Tuner/` and survive the update.
 | Y | Favourite | Favourite |
 | X | Hide channel (in lists) | Previous channel |
 | L1/R1 | Page up/down | Picture overlay (scanlines, CRT) |
+| L2/R2 | | Crop black borders on/off |
 | START | Back to the channel you were watching | |
 | SELECT | | Stats for nerds |
 | MENU | Quit | Quit |
@@ -76,6 +77,9 @@ Y or X deletes one, and START searches. In the first-time setup, START goes to t
 - **Languages, Countries, Genres:** what the free channels are picked by.
 - **Max quality:** 480p, 720p (the default) or 1080p. It also picks the stream's quality step.
 - **Picture:** off, light or strong scanlines, or CRT (also L1/R1 while watching).
+- **Crop black borders:** OFF (the default) or AUTO (also L2/R2 while watching). AUTO finds black bars and cuts
+  them away, so a 4:3 film shown inside a 16:9 channel fills the screen. It waits a few seconds before zooming in,
+  so a dark scene doesn't set it off, and zooms back out at once when the picture fills the frame again.
 - **Tuning screen:** Snow + picture (the default), or Plain: only the channel info while it connects.
 - **Sleep timer:** 30, 60, 90 or 120 minutes, with a warning a minute before.
 - **Adult channels** and **Adult PIN**.
@@ -83,7 +87,8 @@ Y or X deletes one, and START searches. In the first-time setup, START goes to t
 - **Free channels:** OFF uses only your own playlists. **Refresh channels now** reloads everything.
 - **Suggest favourites**, **Hardware decoding**, **My channels order**, and **Run first-time setup again**.
 
-When a channel stops, Tuner tries to reconnect it three times. If it still has no signal, it says so and hides the
+When the stream runs dry, Tuner says Buffering over the frozen picture. When a channel stops, Tuner tries to
+reconnect it three times (Reconnecting 1/3 on screen). If it still has no signal, it says so and hides the
 channel for a week.
 
 ## Most watched and Recently watched
