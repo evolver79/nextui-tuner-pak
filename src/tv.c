@@ -515,6 +515,9 @@ static int crop_detect(const AVFrame *f, Crop *c) {
   while (l < w / 3 && crop_col_black(y, ls, l, t, h - b)) l++;
   while (r < w / 3 && crop_col_black(y, ls, w - 1 - r, t, h - b)) r++;
   int v = t < b ? t : b, hz = l < r ? l : r;
+  // Real bars are thinner than a fifth (4:3 in 16:9: 12.5 % a side; 2.39:1 in 16:9: 13 % top and bottom). More is a
+  // dark frame with something in the middle (a studio or channel logo, titles): it says nothing about bars.
+  if (v > h / 5 || hz > w / 5) return -1;
   if (v < h / 50) v = 0;     // a thin edge isn't worth a zoom
   if (hz < w / 50) hz = 0;
   c->t = c->b = v & ~1; c->l = c->r = hz & ~1;   // even: the chroma planes are half size
