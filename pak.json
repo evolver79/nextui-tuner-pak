@@ -1,12 +1,13 @@
 {
   "name": "Tuner",
-  "version": "v1.3.0",
+  "version": "v1.3.1",
   "type": "TOOL",
   "description": "Free TV channels for the Brick: Pluto TV, Samsung TV Plus and iptv-org channels plus your own M3U playlists and Xtream accounts, a TV guide, favourites, search and hardware video decoding, drawn in Dot, the shared look of Kino, Musicdisk and Tuner.",
   "author": "evolver79",
   "repo_url": "https://github.com/evolver79/nextui-tuner-pak",
   "release_filename": "Tuner.pak.zip",
   "changelog": {
+    "v1.3.1": "Crop black borders no longer zooms in on a dark frame with a logo or titles in the middle (a studio or channel ident): bars thicker than a fifth of the picture are ignored, real ones never are.",
     "v1.3.0": "Crop black borders (Settings, or L2/R2 while watching): a 4:3 show or film inside a 16:9 channel fills the screen instead of sitting in black on all four sides. It waits a few seconds before zooming in, so a dark scene doesn't set it off, and zooms back out at once for a full-width ad. Buffering... shows when the picture freezes because the stream ran dry, and Reconnecting (1/3) instead of Loading while a lost channel is retried. Thanks to Travis McDevitt for the idea.",
     "v1.2.0": "New look: Dot, the shared look of Kino, Musicdisk and Tuner. Menus and lists are cards on a grey ground, or over the live channel, which tunes in behind the menu as you move. A channel banner with what's on now and next, and the tuning screens and stats for nerds in the same look. The search keyboard fills its card. VCR, Teletext, the Theme setting and L2/R2 are gone; snow and the test card stay.",
     "v1.1.0": "Two looks, redone: VCR (an on-screen display over the picture, tape winding and tracking noise) and Teletext (pages that are searched for and arrive, a block-graphics masthead, a listings guide). Hardware video decoding (H.264/H.265) on the Brick's video engine. Stats for nerds (SELECT). Audio tracks: the one in your language, LEFT/RIGHT to switch, remembered per channel. Max quality also picks the stream's quality. Big provider guides read correctly and kept for a day. START or B on the front page: back to the channel. The volume shown when it changes. Smoother 50 fps channels, and fixes.",
