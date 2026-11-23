@@ -34,7 +34,7 @@ Musicdisk and Tuner.
 | ![Settings](.github/resources/screenshots/settings.png) | ![Setup, step 3 of 4: countries](.github/resources/screenshots/setup.png) |
 
 Taken with Tuner's screenshot mode, so no channel is playing: the channel info sits on the waiting screen and the
-menus on a grey ground. On the Brick the live channel plays behind both.
+menus on Tuner's teal ground. On the Brick the live channel plays behind both.
 
 ## Install
 

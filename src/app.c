@@ -609,6 +609,19 @@ static void shots(const char *dir) {
     for (int k = 0; k < 10; k++) {
       screen = scr[k]; cursor = top = 0; edit_kind = EDIT_COUNTRY; setup_step = 2; pin_setting = 1; snprintf(query, sizeof query, "NRK");
       if (screen == SCR_LIST || screen == SCR_GUIDE || screen == SCR_WATCH) { list_kind = LIST_ALL; build_view(); cursor = 2; }
+      if (screen == SCR_GUIDE || screen == SCR_WATCH)   // a made-up guide for the first channels that have none
+        for (int i = 0; i < nview && i < 8; i++) {
+          const Programme *cur, *nx; now_next(view[i], time(NULL), &cur, &nx);
+          if (cur) continue;
+          static const char *ti[] = { "Evening News", "The Weather", "Live: Markets at the Close with a Long Title Indeed", "Documentary" };
+          time_t h0 = time(NULL) / 1800 * 1800 - 900 * (i % 2);
+          view[i]->progs = calloc(2, sizeof(Programme)); view[i]->nprogs = 2;
+          for (int j = 0; j < 2; j++) {
+            view[i]->progs[j].start = h0 + j * 1800; view[i]->progs[j].stop = h0 + (j + 1) * 1800;
+            snprintf(view[i]->progs[j].title, sizeof view[i]->progs[j].title, "%s", ti[(i + j * 2) % 4]);
+          }
+        }
+      if (screen == SCR_GUIDE && nview > 2) { if (!is_fav(view[1]->key)) toggle_fav(view[1]->key); if (!is_fav(view[2]->key)) toggle_fav(view[2]->key); }
       for (int frame = 0; frame < (screen == SCR_LIST ? 90 : 40); frame++) {   // lists: logos; all: a page's arrival
         logos_pump();
         ui_frame(); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
@@ -622,6 +635,24 @@ static void shots(const char *dir) {
       save_shot(dir, nm[k]); (void)t;
       SDL_RenderPresent(ren);
     }
+  }
+  // The screens the loop above can't reach: loading, waiting for Wi-Fi, NO SIGNAL and stats for nerds.
+  for (int k = 0; k < 4; k++) {
+    ui_frame(); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
+    if (k < 2) {
+      screen = SCR_LOADING; load_waiting = k ? 0 : -1;
+      snprintf(load_msg, sizeof load_msg, "Samsung TV Plus: 412 channels");
+      fill_page(); theme()->page(&page); load_waiting = -1;
+    } else if (k == 2) ui_no_signal("NRK1", "No picture after 15 seconds. Tuner tried 3 times; it will try again next time.");
+    else {
+      char l[12][96] = { "CHANNEL|NRK1 (iptv-org)", "VIDEO|h264 1280x720  25.00 fps  HARDWARE", "CROP|none needed",
+        "FRAMES|decoded 25.0/s  shown 25.0/s  dropped 0", "SYNC|A/V +12 ms  jumps 0  render 60/s",
+        "QUEUES|frames 4/8  packets 31  audio 180 ms", "AUDIO|aac 48000 Hz 2 ch  track 1 of 2", "TRACKS|1 Norwegian  2 English",
+        "STREAM|2.4 Mbps now  variant 3 of 4 (2.5 Mbps)", "HEALTH|retries 0  damaged frames 0", "DEVICE|CPU 38%  51 C  Wi-Fi -54 dBm, 72 Mbit/s" };
+      draw_testcard(); ui_nerd(l, 11);
+    }
+    static const char *xn[] = { "loading", "nowifi", "nosignal", "nerd" };
+    save_shot(dir, xn[k]); SDL_RenderPresent(ren);
   }
 }
 
