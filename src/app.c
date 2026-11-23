@@ -17,6 +17,7 @@
 #include "tv.h"
 #include "ui.h"
 #include "logos.h"
+#include "wifi.h"
 
 // Pad buttons in the Brick's own names (it reports an Xbox layout with Nintendo labels).
 enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X = SDL_CONTROLLER_BUTTON_Y,
@@ -65,8 +66,12 @@ static int load_thread(void *arg) {
   loaded = l; load_done = 1;
   return 0;
 }
+// No Wi-Fi: the loading screen says so and waits; loading starts by itself once it's back (see main).
+static int load_waiting = -1;   // -1 not waiting; else the force to load with
 static void start_loading(int force) {
   load_done = 0; screen = SCR_LOADING; tv_tune(NULL);
+  if (!wifi_up()) { load_waiting = force; return; }
+  load_waiting = -1;
   SDL_DetachThread(SDL_CreateThread(load_thread, "load", (void *)(intptr_t)force));
 }
 
@@ -301,7 +306,13 @@ static void fill_page(void) {
       break;
     }
     case SCR_LOADING:
-      p->kind = PAGE_LOADING; p->page_no = 199; snprintf(p->title, sizeof p->title, "Tuning in");
+      p->kind = PAGE_LOADING; p->page_no = 199;
+      if (load_waiting >= 0) {
+        snprintf(p->title, sizeof p->title, "No Wi-Fi");
+        snprintf(p->status, sizeof p->status, "Tuner needs Wi-Fi. Turn it on in the device settings: Tuner goes on by itself.");
+        break;
+      }
+      snprintf(p->title, sizeof p->title, "Tuning in");
       SDL_LockMutex(load_lock); snprintf(p->status, sizeof p->status, "%s", load_msg); SDL_UnlockMutex(load_lock);
       break;
     case SCR_MYGROUPS: {
@@ -347,8 +358,10 @@ static void watch_commit(int final) {
   if (final) session_ch = NULL;
 }
 
+static void no_wifi(void) { snprintf(toast, sizeof toast, "No Wi-Fi: turn it on to watch"); toast_until = SDL_GetTicks() + 3000; }
 static void tune_view(int i) {
   if (!nview) return;
+  if (!wifi_up()) { no_wifi(); return; }
   int next = (i + nview) % nview;
   if (screen == SCR_WATCH && next != watch_index) prev_index = watch_index;
   watch_index = next;
@@ -358,6 +371,7 @@ static void tune_view(int i) {
   banner_until = SDL_GetTicks() + 6000;
 }
 static void watch(int i) {
+  if (!wifi_up()) { no_wifi(); return; }
   back_from_watch = screen; prev_index = -1;
   snprintf(resume_key, sizeof resume_key, "%s", view[i]->key); resume_kind = list_kind; resume_genre = list_genre;
   if (tv_channel() == view[i] && tv_state() != TV_OFF) {   // still playing behind the menu: just back to it
@@ -656,6 +670,7 @@ int main(int argc, char **argv) {
   tv_hwdec(set.hwdec);
   volume_init();
   load_lock = SDL_CreateMutex();
+  if (!shots_dir) wifi_start();
 
   if (!set.setup_done) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = 0; }
   else start_loading(0);
@@ -694,7 +709,8 @@ int main(int argc, char **argv) {
       }
     }
     // Live themes: resting on a channel in a list for a moment tunes it in behind the menu, like a TV's preview.
-    if (theme()->live_menus && screen == SCR_LIST && nview && last_move && SDL_GetTicks() - last_move > 1200) {
+    if (screen == SCR_LOADING && load_waiting >= 0 && wifi_up()) start_loading(load_waiting);
+    if (theme()->live_menus && screen == SCR_LIST && nview && last_move && wifi_up() && SDL_GetTicks() - last_move > 1200) {
       if (tv_channel() != view[cursor]) tv_tune(view[cursor]);
       last_move = 0;
     }
@@ -721,7 +737,8 @@ int main(int argc, char **argv) {
       if ((plain_loading || SDL_GetTicks() < banner_until) && nview) theme()->banner(view[watch_index], watch_index + 1);
       // plain tuning screen: the channel info stays up with LOADING (or RECONNECTING), in the theme's style; and
       // BUFFERING over a frozen picture when the stream runs dry while playing
-      if (plain_loading || tv_buffering()) {
+      if (!wifi_up()) theme()->toast("No Wi-Fi: turn it on to keep watching", 1);
+      else if (plain_loading || tv_buffering()) {
         static const char *dots[] = { "", ".", "..", "..." };
         char m[48]; int r = tv_retries();
         if (!plain_loading) snprintf(m, sizeof m, "Buffering%s", dots[(SDL_GetTicks() / 400) % 4]);
