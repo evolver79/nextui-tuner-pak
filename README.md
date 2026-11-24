@@ -1,6 +1,6 @@
 # Tuner – free TV for NextUI
 
-Free TV channels on the TrimUI Brick (`tg5040`). Pick your languages and countries, and Tuner finds the channels,
+Free TV channels on the TrimUI Brick and the TrimUI Smart Pro (both `tg5040`). Pick your languages and countries, and Tuner finds the channels,
 shows what's on now and next, and plays them: Pluto TV, Samsung TV Plus, iptv-org's public lists, or your own M3U
 playlists and Xtream accounts. Drawn with [Dot](https://github.com/evolver79/nextui-dotui), the shared look of Kino,
 Musicdisk and Tuner.
@@ -34,7 +34,13 @@ Musicdisk and Tuner.
 | ![Settings](.github/resources/screenshots/settings.png) | ![Setup, step 3 of 4: countries](.github/resources/screenshots/setup.png) |
 
 Taken with Tuner's screenshot mode, so no channel is playing: the channel info sits on the waiting screen and the
-menus on Tuner's teal ground. On the Brick the live channel plays behind both.
+menus on Tuner's teal ground. On the device the live channel plays behind both.
+
+Tested on the Brick and the Smart Pro; each gets the layout for its own screen, and on the Smart Pro 16:9 channels
+fill the screen. On the Smart Pro:
+
+<img src=".github/resources/screenshots/smartpro-guide.png" width="49%" alt="All channels on the Smart Pro's wide screen">
+<img src=".github/resources/screenshots/smartpro-banner.png" width="49%" alt="Channel info on the Smart Pro">
 
 ## Install
 
@@ -138,6 +144,7 @@ git clone --recursive https://github.com/evolver79/nextui-tuner-pak   # or: git 
 build/build-ffmpeg.sh   # a minimal static ffmpeg 6.1.2 (HLS, MPEG-TS, H.264/H.265, AAC/MP3/AC-3, HTTPS)
 build/build-app.sh      # Tuner itself -> build/out/tuner
 ./package.sh            # dist/Tuner.pak.zip
+build/shots.sh          # every page headless into build/out/shots/ (DOT_SCREEN=1280x720: the Smart Pro's)
 ```
 
 The build scripts need Docker: they build in an ARM64 Debian bullseye container (glibc 2.31, OpenSSL 1.1, like the

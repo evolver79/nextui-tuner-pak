@@ -18,6 +18,7 @@
 #include "ui.h"
 #include "logos.h"
 #include "wifi.h"
+#include "dot.h"
 
 // Pad buttons in the Brick's own names (it reports an Xbox layout with Nintendo labels).
 enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X = SDL_CONTROLLER_BUTTON_Y,
@@ -565,7 +566,7 @@ static void on_button(int b) {
 
 // The old CRT switch-off: the picture squeezes to a bright line, then to a dot that fades.
 static void power_off(void) {
-  int w = 1024, h = 768;
+  int w = DOT_W, h = DOT_H;
   Uint32 *px = malloc(w * h * 4);
   if (!px || SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, px, w * 4) != 0) { free(px); return; }
   SDL_Texture *last = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h);
@@ -594,7 +595,7 @@ static void power_off(void) {
 
 // --shots <dir>: draws each page to BMP files and quits (for checking the look without pressing buttons).
 static void save_shot(const char *dir, const char *name) {
-  SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 1024, 768, 32, SDL_PIXELFORMAT_ARGB8888);
+  SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, DOT_W, DOT_H, 32, SDL_PIXELFORMAT_ARGB8888);
   SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, s->pixels, s->pitch);
   char p[700]; snprintf(p, sizeof p, "%s/%s.bmp", dir, name);
   SDL_SaveBMP(s, p); SDL_FreeSurface(s);
@@ -687,10 +688,11 @@ int main(int argc, char **argv) {
   avformat_network_init();
   av_log_set_level(AV_LOG_ERROR);
   av_log_set_callback(log_masked);
-  SDL_Window *win = SDL_CreateWindow("Tuner", 0, 0, 1024, 768, SDL_WINDOW_FULLSCREEN);
+  dot_screen_detect();   // Brick 1024x768 or Smart Pro 1280x720
+  SDL_Window *win = SDL_CreateWindow("Tuner", 0, 0, DOT_W, DOT_H, SDL_WINDOW_FULLSCREEN);
   ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
   if (!ren) ren = SDL_CreateRenderer(win, -1, 0);   // screenshots: SDL's dummy video has only the software one
-  SDL_RenderSetLogicalSize(ren, 1024, 768);
+  SDL_RenderSetLogicalSize(ren, DOT_W, DOT_H);
   for (int i = 0; i < SDL_NumJoysticks(); i++) if (SDL_IsGameController(i)) SDL_GameControllerOpen(i);
   SDL_AudioSpec want = {0}, have;
   want.freq = 48000; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 1024;

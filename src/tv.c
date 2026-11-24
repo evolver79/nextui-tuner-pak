@@ -19,8 +19,9 @@
 #include "ui.h"
 #include "hwdec.h"
 
-#define SCREEN_W 1024
-#define SCREEN_H 768
+#include "dot.h"
+#define SCREEN_W DOT_W   // the device's screen: Brick 1024x768, Smart Pro 1280x720
+#define SCREEN_H DOT_H
 #define AUDIO_RATE 48000
 #define VQ 6        // decoded video frames buffered ahead
 #define VPKTS 512   // video packets buffered between demuxer and decoder
@@ -780,7 +781,7 @@ void tv_render(void) {
       crop_update(show); shown_at = SDL_GetTicks();
       av_frame_free(&show); st_shown++; osd_frames++;
     }
-    if (video && h) {  // fit to the 4:3 screen, letterboxing 16:9 (after cropping black bars, when that's on)
+    if (video && h) {  // fit to the screen: 16:9 fills the Smart Pro's, letterboxed on the Brick's 4:3 (after cropping black bars, when that's on)
       SDL_Rect src = { 0, 0, tex_w, tex_h };
       if (set->autocrop && crop_w == tex_w && crop_h == tex_h)
         src = (SDL_Rect){ crop_on.l, crop_on.t, tex_w - crop_on.l - crop_on.r, tex_h - crop_on.t - crop_on.b };
