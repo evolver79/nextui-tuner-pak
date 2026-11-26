@@ -645,14 +645,14 @@ static void save_shot(const char *dir, const char *name) {
 }
 static void shots(const char *dir) {
   themes_still(1);
-  static const Screen scr[] = { SCR_INDEX, SCR_GENRES, SCR_LIST, SCR_GUIDE, SCR_SETTINGS, SCR_SETUP, SCR_SEARCH, SCR_PIN, SCR_WATCH, SCR_MYGROUPS };
-  static const char *nm[] = { "index", "genres", "list", "guide", "settings", "setup", "search", "pin", "banner", "mygroups" };
+  static const Screen scr[] = { SCR_INDEX, SCR_GENRES, SCR_LIST, SCR_GUIDE, SCR_SETTINGS, SCR_SETUP, SCR_SEARCH, SCR_PIN, SCR_WATCH, SCR_MYGROUPS, SCR_LIST };
+  static const char *nm[] = { "index", "genres", "list", "guide", "settings", "setup", "search", "pin", "banner", "mygroups", "list-scrolled" };
   for (int t = 0; t < NTHEMES; t++) {
     set.theme = t;
     collect_my_groups();
-    for (int k = 0; k < 10; k++) {
+    for (int k = 0; k < 11; k++) {
       screen = scr[k]; cursor = top = 0; edit_kind = EDIT_COUNTRY; setup_step = 2; pin_setting = 1; snprintf(query, sizeof query, "NRK");
-      if (screen == SCR_LIST || screen == SCR_GUIDE || screen == SCR_WATCH) { list_kind = LIST_ALL; build_view(); cursor = 2; }
+      if (screen == SCR_LIST || screen == SCR_GUIDE || screen == SCR_WATCH) { list_kind = LIST_ALL; build_view(); cursor = k == 10 ? 12 : 2; }   // list-scrolled: the row before peeks out
       if (screen == SCR_GUIDE || screen == SCR_WATCH)   // a made-up guide for the first channels that have none
         for (int i = 0; i < nview && i < 8; i++) {
           const Programme *cur, *nx; now_next(view[i], time(NULL), &cur, &nx);

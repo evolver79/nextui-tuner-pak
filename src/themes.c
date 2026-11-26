@@ -120,10 +120,13 @@ static void logo_in_well(SDL_Texture *t, int y, int sel) {
   int w, h; if (SDL_QueryTexture(t, NULL, NULL, &w, &h) != 0 || w <= 0 || h <= 0) return;
   double k = 48.0 / w < 40.0 / h ? 48.0 / w : 40.0 / h;
   SDL_Rect d = { cx - (int)(w * k) / 2, cy - (int)(h * k) / 2, (int)(w * k), (int)(h * k) };
+  SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+  SDL_SetTextureAlphaMod(t, (Uint8)(dot_alpha(D) * 255));   // fades with its row (a peek)
   SDL_RenderCopy(ren, t, NULL, &d);
 }
 
-// Lists move the Dot way (dot_list): the rows slide, the highlight slides, the next row peeks out under the last.
+// Lists move the Dot way (dot_list): the rows slide, the highlight slides, the next row peeks out under the last and,
+// scrolled down, the row before under the header (dot_page draws the header after the list), both fading.
 typedef void (*RowFn)(const Page *p, int i, int y, int sel);
 static RowFn row_fn;
 static void row_cb(void *ud, int i, int y, int sel) { row_fn((const Page *)ud, i, y, sel); }
@@ -132,7 +135,8 @@ static void list_draw(const Page *p, int n, int rows, int peek, RowFn fn) {
   unsigned key = (unsigned)p->kind * 31u + (unsigned)n;   // which list: its kind, title and length
   for (const char *c = p->title; *c; c++) key = key * 33u + (unsigned char)*c;
   row_fn = fn;
-  dot_list(D, &dl, (int)key, n, rows, view_top(p, rows), p->cursor, 40, CW, peek, row_cb, (void *)p);
+  dot_list(D, &dl, (int)key, n, rows, view_top(p, rows), p->cursor, 40, CW, (peek ? DOT_PEEK_BELOW : 0) | DOT_PEEK_ABOVE,
+           row_cb, (void *)p);
 }
 
 static const Channel *row_on;   // the channel playing (its row gets the live dot)
@@ -257,25 +261,26 @@ static void dot_page(const Page *p) {
   if (p->kind == PAGE_PIN) { pin_page(p); dot_set_night(D, 0); return; }
   if (p->kind == PAGE_KEYS) { keys_page(p); dot_set_night(D, 0); return; }
   int front = p->page_no == 100, pill_rows = ROWS;
+  // the title, and the count or help at the right; help that doesn't fit there goes in a pill below
+  const char *right = p->kind == PAGE_LIST || p->kind == PAGE_GUIDE ? p->status : p->help;
+  int fits = dot_text_w(D, DOT_LABEL_T, p->title) + dot_text_w(D, DOT_LABEL_T, right) + 60 <= CW;
+  int pill = !front && !fits && right == p->help && p->nrows && p->help[0];   // under the rows, in the fifth row's place at most
+  if (pill) pill_rows = p->nrows < ROWS - 1 ? p->nrows : ROWS - 1;
+  if (!p->nrows && !(p->kind == PAGE_GUIDE && p->nchs)) message_card("Nothing here", p->help);
+  else if (p->kind == PAGE_LIST) list_rows(p);
+  else if (p->kind == PAGE_GUIDE) guide_rows(p);
+  else menu_rows(p, pill_rows);
+  // the header after the list: over the row before, peeking out under it
   if (front) {   // the front page: the name in dots, the clock and the counts
     char t[16], c[140]; clock_str(t, sizeof t, "%H:%M");
     dot_title(D, "TUNER");
     snprintf(c, sizeof c, "%s · %s", p->help, t);
     dot_header(D, NULL, c);
-  } else {   // the title, and the count or help at the right; help that doesn't fit there goes in a pill below
-    const char *right = p->kind == PAGE_LIST || p->kind == PAGE_GUIDE ? p->status : p->help;
-    int fits = dot_text_w(D, DOT_LABEL_T, p->title) + dot_text_w(D, DOT_LABEL_T, right) + 60 <= CW;
-    dot_header(D, p->title, fits ? right : NULL);
-    if (!fits && right == p->help && p->nrows && p->help[0]) {   // under the rows, in the fifth row's place at most
-      pill_rows = p->nrows < ROWS - 1 ? p->nrows : ROWS - 1;
-      char l[200]; fit(l, sizeof l, DOT_UI, p->help, CW - 48);
-      dot_pill(D, 40, 96 + pill_rows * PITCH + (DOT_ROW_H - DOT_PILL_H) / 2, l, 0, 0, DOT_LEFT);
-    }
+  } else dot_header(D, p->title, fits ? right : NULL);
+  if (pill) {
+    char l[200]; fit(l, sizeof l, DOT_UI, p->help, CW - 48);
+    dot_pill(D, 40, 96 + pill_rows * PITCH + (DOT_ROW_H - DOT_PILL_H) / 2, l, 0, 0, DOT_LEFT);
   }
-  if (!p->nrows && !(p->kind == PAGE_GUIDE && p->nchs)) message_card("Nothing here", p->help);
-  else if (p->kind == PAGE_LIST) list_rows(p);
-  else if (p->kind == PAGE_GUIDE) guide_rows(p);
-  else menu_rows(p, pill_rows);
   dock_from(p->hints);
   dot_set_night(D, 0);
 }
