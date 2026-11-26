@@ -12,17 +12,26 @@ Musicdisk and Tuner.
   your own XMLTV or your Xtream provider.
 - **Favourites and history:** Favourites, Most watched and Recently watched fill the front page as you watch. Search
   covers every channel.
-- **Watching:** the channel you rest on in a list tunes in behind the menu. A banner shows what's on, how far in, and
-  what's next. Snow over the programme's picture while a channel connects, the time in dots on long waits, and a
+- **Watching:** the channel you rest on in a list tunes in behind the menu. The channel info slides up from the bottom
+  of the screen with what's on, how far in, and what's next, and fades to the new channel's when you zap. Snow over
+  the programme's picture while a channel connects, a card in the middle while it tunes in or buffers, and a
   plain-words message when a channel can't be played.
-- **Audio tracks:** on channels with several (often marked MULTI), Tuner picks the one in your languages. LEFT/RIGHT
-  switches, and your choice is remembered per channel.
+- **Audio and subtitles:** LEFT/RIGHT while watching opens a picker with a switch between Audio and Subtitles. Tuner
+  starts in your languages, and what you pick is remembered per channel. Switching audio track picks up where you
+  are, without a jump.
+- **Subtitles of three kinds:** WebVTT tracks beside HLS streams (Pluto TV has them on many channels), closed
+  captions carried in the picture (CEA-608, US channels), and DVB subtitles (European broadcasts).
+- **In step:** sound and picture stay together through ad breaks and Wi-Fi hiccups: a few seconds are read ahead,
+  ad splices are joined, and when the stream runs dry both pause and go on together.
+- **The right shape:** 4:3 and 16:9 as the channel sends them, also standard-definition channels (720×576, 720×480),
+  which carry their shape in the picture, with hardware decoding.
 - **Hardware decoding:** H.264 and H.265 run on the Brick's video engine, about a fifth of one CPU core where
   software decoding takes three.
 - **Stats for nerds** (SELECT while watching): codec, size and frame rates, dropped frames, A/V sync, bitrate and
   quality steps, CPU, temperature and Wi-Fi.
 - **Also:** channel logos, scanline and CRT picture overlays, a sleep timer, an adult PIN, and the volume shown when
-  you change it. Tuner starts on the channel you watched last.
+  you change it. Lists slide as you move, and the next row peeks out at the bottom when there's more. Tuner starts on
+  the channel you watched last.
 
 ## Screenshots
 
@@ -32,9 +41,10 @@ Musicdisk and Tuner.
 | ![Channel info over the picture: what's on, how far in, and what's next](.github/resources/screenshots/banner.png) | ![All channels with logos](.github/resources/screenshots/list.png) |
 | ![Channels by genre](.github/resources/screenshots/genres.png) | ![Search with the on-screen keyboard](.github/resources/screenshots/search-keyboard.png) |
 | ![Settings](.github/resources/screenshots/settings.png) | ![Setup, step 3 of 4: countries](.github/resources/screenshots/setup.png) |
+| ![Audio and subtitles while watching: a switch between the two, the one in use with a cyan dot](.github/resources/screenshots/picker.png) | |
 
-Taken with Tuner's screenshot mode, so no channel is playing: the channel info sits on the waiting screen and the
-menus on Tuner's teal ground. On the device the live channel plays behind both.
+Taken with Tuner's screenshot mode, so no channel is playing: the channel info and the picker sit on the waiting
+screen and the menus on Tuner's teal ground. On the device the live channel plays behind them.
 
 Tested on the Brick and the Smart Pro; each gets the layout for its own screen, and on the Smart Pro 16:9 channels
 fill the screen. On the Smart Pro:
@@ -64,7 +74,7 @@ are kept in `.userdata/tg5040/Tuner/` and survive the update.
 
 | Button | In the menus | Watching |
 |---|---|---|
-| D-pad | Move (left/right: page) | Up/down: change channel. Left/right: audio track |
+| D-pad | Move (left/right: page) | Up/down: change channel. Left/right: audio and subtitles |
 | A | Open / watch | Show or hide the channel info |
 | B | Back (on the front page: back to the channel) | Back to the menu |
 | Y | Favourite | Favourite |
@@ -75,7 +85,8 @@ are kept in `.userdata/tg5040/Tuner/` and survive the update.
 | SELECT | | Stats for nerds |
 | MENU | Quit | Quit |
 
-The front page scrolls: the Guide, My channels, Search and Settings are further down. In Search, A types a letter,
+In the audio and subtitles picker, UP/DOWN picks (at once), LEFT/RIGHT switches between Audio and Subtitles, and B
+closes it. The front page scrolls: the Guide, My channels, Search and Settings are further down. In Search, A types a letter,
 Y or X deletes one, and START searches. In the first-time setup, START goes to the next step.
 
 ## Settings
@@ -90,10 +101,13 @@ Y or X deletes one, and START searches. In the first-time setup, START goes to t
 - **Sleep timer:** 30, 60, 90 or 120 minutes, with a warning a minute before.
 - **Adult channels** and **Adult PIN**.
 - **Show hidden channels again:** the ones you hid, and the ones Tuner hid because they had no signal.
-- **Free channels:** OFF uses only your own playlists. **Refresh channels now** reloads everything.
+- **Free channels:** OFF uses only your own playlists. **Your playlists:** OFF uses only the free channels (your
+  playlists stay in `playlists.txt`, just not loaded). They're never both off. **Refresh channels now** reloads
+  everything.
 - **Suggest favourites**, **Hardware decoding**, **My channels order**, and **Run first-time setup again**.
 
-When the stream runs dry, Tuner says Buffering over the frozen picture. When a channel stops, Tuner tries to
+When the stream runs dry, the picture and the sound pause together and Tuner says Buffering; a stream that keeps
+running dry waits a little longer each time, so it plays in longer stretches instead of stuttering. When a channel stops, Tuner tries to
 reconnect it three times (Reconnecting 1/3 on screen). If it still has no signal, it says so and hides the
 channel for a week.
 
@@ -133,6 +147,8 @@ every address in the video library's own error messages is replaced by `[url]`.
 
 - **A channel won't play:** free streams come and go. Try another channel, or Settings > Refresh channels now.
 - **The picture stutters:** check that Settings > Hardware decoding is ON, or lower Max quality.
+- **No subtitles:** not every channel has them, and some providers leave them out of their streams. The picker's
+  Subtitles side lists what the channel has; closed captions show up there once the picture has brought some.
 - **Logs:** `Logs/Tuner.txt` on the SD card. It has no addresses or passwords, so it's safe to attach to an
   [issue](../../issues).
 
@@ -141,7 +157,7 @@ every address in the video library's own error messages is replaced by `[url]`.
 ```sh
 git clone --recursive https://github.com/evolver79/nextui-tuner-pak   # or: git submodule update --init (ui/dot)
 # download ffmpeg-6.1.2.tar.xz from https://ffmpeg.org/releases/ into deps/
-build/build-ffmpeg.sh   # a minimal static ffmpeg 6.1.2 (HLS, MPEG-TS, H.264/H.265, AAC/MP3/AC-3, HTTPS)
+build/build-ffmpeg.sh   # a minimal static ffmpeg 6.1.2 (HLS, MPEG-TS, H.264/H.265, AAC/MP3/AC-3, HTTPS, subtitles)
 build/build-app.sh      # Tuner itself -> build/out/tuner
 ./package.sh            # dist/Tuner.pak.zip
 build/shots.sh          # every page headless into build/out/shots/ (DOT_SCREEN=1280x720: the Smart Pro's)
@@ -149,7 +165,9 @@ build/shots.sh          # every page headless into build/out/shots/ (DOT_SCREEN=
 
 The build scripts need Docker: they build in an ARM64 Debian bullseye container (glibc 2.31, OpenSSL 1.1, like the
 Brick), natively on Apple Silicon. Tuner links the Brick's own SDL2, SDL2_image, SDL2_ttf, OpenSSL and zlib. The
-Brick's ffmpeg has no HLS or HTTPS, hence the static one.
+Brick's ffmpeg has no HLS or HTTPS, hence the static one. It gets one patch (`build/ffmpeg-hls-interleave.patch`):
+HLS playlists are read on their own continuous timelines, so an audio playlist of its own that jumps at an ad splice
+doesn't starve the picture.
 
 Hardware decoding (`src/hwdec.c`) loads Allwinner's CedarC libraries from the Brick's `/usr/lib` at run time; they
 aren't part of this repository or the pak. Its struct layouts follow CedarC 1.3.0 as built for the Brick and were
@@ -160,7 +178,7 @@ Pushing a tag `vX.Y.Z` that matches `version` in `pak.json` makes a GitHub relea
 ## Made with an AI assistant
 
 Built with the help of Claude (Anthropic): the code, build scripts and documentation were written in conversation
-with it, and tested on a real TrimUI Brick.
+with it, and tested on a real TrimUI Brick and Smart Pro.
 
 ## Licences and credits
 

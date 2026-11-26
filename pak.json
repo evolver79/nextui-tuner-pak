@@ -2,7 +2,7 @@
   "name": "Tuner",
   "version": "v1.5.0",
   "type": "TOOL",
-  "description": "Free TV channels for the TrimUI Brick and Smart Pro: Pluto TV, Samsung TV Plus and iptv-org channels plus your own M3U playlists and Xtream accounts, a TV guide, favourites, search and hardware video decoding, drawn in Dot, the shared look of Kino, Musicdisk and Tuner.",
+  "description": "Free TV channels for the TrimUI Brick and Smart Pro: Pluto TV, Samsung TV Plus and iptv-org channels plus your own M3U playlists and Xtream accounts, a TV guide, favourites, search, subtitles and hardware video decoding, drawn in Dot, the shared look of Kino, Musicdisk and Tuner.",
   "author": "evolver79",
   "repo_url": "https://github.com/evolver79/nextui-tuner-pak",
   "release_filename": "Tuner.pak.zip",
@@ -27,6 +27,7 @@
     ".github/resources/screenshots/genres.png",
     ".github/resources/screenshots/search-keyboard.png",
     ".github/resources/screenshots/settings.png",
-    ".github/resources/screenshots/setup.png"
+    ".github/resources/screenshots/setup.png",
+    ".github/resources/screenshots/picker.png"
   ]
 }
