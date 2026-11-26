@@ -25,6 +25,7 @@ static SDL_Renderer *ren;
 static Dot *D;
 static Theme T_DOT;
 static int still;       // screenshots: no blinking
+static int band_top = 10000;   // where the watch band's top is now (below the screen when it's down): subtitles sit above it
 
 int themes_init(SDL_Renderer *r, const char *pak_dir) {
   ren = r;
@@ -326,7 +327,7 @@ static void banner_info(const Channel *c, int y) {
 static void dot_banner(const Channel *c, int number, int up) {
   static DotSlide sl; static DotSwap sw; static const Channel *was; static int was_n, now_n; static float hb;
   float e = dot_slide(D, &sl, up);
-  if (e <= 0) { was = c; was_n = now_n = number; hb = 0; dot_swap(D, &sw, c, 0, &e); return; }
+  if (e <= 0) { was = c; was_n = now_n = number; hb = 0; dot_swap(D, &sw, c, 0, &e); band_top = H; return; }
   if (c != was) { if (now_n != number) was_n = now_n; was = c; }   // the number that goes with the old one
   now_n = number;
   float fa; const Channel *show = dot_swap(D, &sw, c, 1, &fa);
@@ -337,6 +338,7 @@ static void dot_banner(const Channel *c, int number, int up) {
   int h = (int)lroundf(hb), y = H - h + (int)lroundf((1 - e) * h);
   dot_set_alpha(D, e * fa); banner_pills(show, show_n);   // the pills fade
   dot_set_alpha(D, 1); dot_band(D, y, h);                  // the band slides
+  band_top = y;
   dot_set_alpha(D, fa); banner_info(show, y);
   dot_set_alpha(D, 1);
 }
@@ -396,6 +398,12 @@ int ui_audio(const char *label, Uint32 since) {
 }
 
 void ui_nerd(char lines[][96], int n) { dot_stats(D, lines, n); }
+void ui_picker(int show, const char *const *tabs, int ntabs, int tab, const char *const *items, int n, int cursor, int in_use) {
+  static DotPicker p;
+  dot_set_accent(D, ACCENT);
+  dot_picker(D, &p, show, tabs, ntabs, tab, items, n, cursor, in_use);
+}
+void ui_subtitle(const char *text) { dot_subtitle(D, text, (band_top < H ? band_top : H) - 24); }
 // Tuning in, buffering, reconnecting, no Wi-Fi: a Dot busy card in the middle (drawn every frame; show: fades).
 void ui_busy(int show, const char *label, const char *value, int spin) {
   static DotSlide s; static char l[48], v[110];

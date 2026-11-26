@@ -55,3 +55,7 @@ void ui_nerd(char lines[][96], int n);                    // stats for nerds: "L
 int ui_audio(const char *label, Uint32 since);
 // Waiting while watching (tuning in, buffering...): in the middle; drawn every frame, show says whether it's up.
 void ui_busy(int show, const char *label, const char *value, int spin);
+// The audio/subtitles picker, every frame while watching (show: whether it's open; it fades).
+void ui_picker(int show, const char *const *tabs, int ntabs, int tab, const char *const *items, int n, int cursor, int in_use);
+// The subtitle on now ("" none), above the band when that's up.
+void ui_subtitle(const char *text);

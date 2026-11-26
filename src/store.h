@@ -51,5 +51,8 @@ const char *recent_key(int i);                     // 0 = the most recent
 // The audio track chosen on a channel (LEFT/RIGHT while watching): its language (may be "") and position, -1 if none.
 int audio_pref_get(const char *key, char *lang, size_t n);
 void audio_pref_set(const char *key, const char *lang, int pos);
+// The subtitles you chose per channel (subs.txt): 1 and the language (or name) when you chose, "" = off; 0 never.
+int sub_pref_get(const char *key, char *lang, size_t n);
+void sub_pref_set(const char *key, const char *lang);
 int was_suggested(const char *key);                // favourite suggestions: each channel once
 void mark_suggested(const char *key);

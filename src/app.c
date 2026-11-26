@@ -45,7 +45,20 @@ static int dirty_sources, running = 1;
 static Uint32 banner_until, toast_until, last_move;
 static char toast[64];
 static int show_osd;
-static char audio_label[64]; static Uint32 audio_at;   // LEFT/RIGHT while watching: the track picked, shown mid-screen
+static char audio_label[64]; static Uint32 audio_at;   // a notice mid-screen (only one audio track)
+// LEFT/RIGHT while watching: the picker (audio | subtitles). Its tabs, which is shown, the row focused, when it was
+// last used (it closes by itself after PICK_MS).
+#define PICK_MS 5000
+static int pick_open, pick_tab, pick_cur; static Uint32 pick_at;
+typedef struct { char items[17][48]; const char *ptr[17]; int n, in_use; } PickList;
+static void pick_list(int tab, PickList *l) {   // tab 0 audio, 1 subtitles ("Off" first)
+  int cur;
+  if (tab == 0) { l->n = tv_audio_tracks(l->items, 16, &cur); l->in_use = cur; }
+  else { snprintf(l->items[0], 48, "Off"); l->n = 1 + tv_sub_tracks(l->items + 1, 16, &cur); l->in_use = cur + 1; }
+  for (int i = 0; i < l->n; i++) l->ptr[i] = l->items[i];
+}
+static int pick_subs(void) { char l[1][48]; int c; return tv_sub_tracks(l, 1, &c) > 0; }
+static int pick_audios(void) { char l[16][48]; int c; return tv_audio_tracks(l, 16, &c); }
 static int prev_index = -1;                        // X while watching: back to the channel before
 static char resume_key[64]; static ListKind resume_kind; static int resume_genre;   // START in the menus: back to this channel, in this list
 static Uint32 sleep_at; static int sleep_min, sleep_warned;
@@ -424,13 +437,31 @@ static void on_button(int b) {
   int step = b == BTN_UP ? -1 : b == BTN_DOWN ? 1 : 0;
   switch (screen) {
     case SCR_WATCH:
+      if (pick_open) {   // the picker has the buttons: UP/DOWN pick at once, LEFT/RIGHT the other tab, A/B close
+        PickList l; pick_list(pick_tab, &l);
+        pick_at = SDL_GetTicks();
+        if ((b == BTN_UP || b == BTN_DOWN) && l.n) {
+          pick_cur = (pick_cur + (b == BTN_DOWN ? 1 : -1) + l.n) % l.n;
+          if (pick_tab == 0) tv_audio_set(pick_cur); else tv_sub_set(pick_cur - 1);
+        } else if ((b == BTN_LEFT || b == BTN_RIGHT) && pick_audios() >= 2 && pick_subs()) {
+          pick_tab = !pick_tab; pick_list(pick_tab, &l); pick_cur = l.in_use >= 0 ? l.in_use : 0;
+        } else if (b == BTN_A || b == BTN_B || b == BTN_SELECT || b == BTN_START) pick_open = 0;
+        break;
+      }
       if (b == BTN_UP || b == BTN_DOWN) tune_view(watch_index + (b == BTN_UP ? 1 : -1));
       if (b == BTN_A) banner_until = SDL_GetTicks() < banner_until ? 0 : 0xFFFFFFFFu;
       if (b == BTN_Y) { toggle_fav(view[watch_index]->key); say(is_fav(view[watch_index]->key) ? "Favourite" : "Not a favourite"); }
       if (b == BTN_L1 || b == BTN_R1) { tv_overlay_step(b == BTN_R1 ? 1 : -1); say(tv_overlay_name()); }
       if (b == BTN_L2 || b == BTN_R2) toggle_crop();
       if (b == BTN_SELECT) show_osd = !show_osd;
-      if (b == BTN_LEFT || b == BTN_RIGHT) { tv_audio_step(b == BTN_RIGHT ? 1 : -1, audio_label, sizeof audio_label); audio_at = SDL_GetTicks(); }
+      if ((b == BTN_LEFT || b == BTN_RIGHT) && !pick_open) {   // the picker: audio, and subtitles when there are some
+        int na = pick_audios(), ns = pick_subs();
+        if (na < 2 && !ns) { snprintf(audio_label, sizeof audio_label, na ? "ONE AUDIO TRACK" : "NO AUDIO"); audio_at = SDL_GetTicks(); }
+        else {
+          pick_open = 1; pick_tab = na < 2 ? 1 : 0; pick_at = SDL_GetTicks();
+          PickList l; pick_list(pick_tab, &l); pick_cur = l.in_use >= 0 ? l.in_use : 0;
+        }
+      }
       if (b == BTN_X && prev_index >= 0 && prev_index < nview) tune_view(prev_index);   // last channel
       if (b == BTN_B) leave_watch();
       break;
@@ -650,7 +681,7 @@ static void shots(const char *dir) {
     }
   }
   // The screens the loop above can't reach: loading, waiting for Wi-Fi, NO SIGNAL and stats for nerds.
-  for (int k = 0; k < 6; k++) {
+  for (int k = 0; k < 8; k++) {
     ui_frame(); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
     if (k < 2) {
       screen = SCR_LOADING; load_waiting = k ? 0 : -1;
@@ -664,9 +695,13 @@ static void shots(const char *dir) {
         "STREAM|2.4 Mbps now  variant 3 of 4 (2.5 Mbps)", "HEALTH|retries 0  damaged frames 0", "DEVICE|CPU 38%  51 C  Wi-Fi -54 dBm, 72 Mbit/s" };
       if (k == 3) { draw_testcard(); ui_nerd(l, 11); }
       else if (k == 4) { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3, 1); ui_audio("AUDIO 2/3: English", SDL_GetTicks()); }
-      else { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3, 1); ui_busy(1, "TUNING IN", nview ? view[2 < nview ? 2 : 0]->name : "NRK1", 1); }
+      else if (k == 5) { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3, 1); ui_busy(1, "TUNING IN", nview ? view[2 < nview ? 2 : 0]->name : "NRK1", 1); }
+      else if (k == 6) {
+        static const char *tabs[2] = { "Audio", "Subtitles" }, *items[4] = { "Off", "English", "Norsk", "English · SDH" };
+        draw_testcard(); ui_picker(1, tabs, 2, 1, items, 4, 2, 1);
+      } else { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3, 1); ui_subtitle("I told you, the signal comes back\nwhen the weather clears up."); }
     }
-    static const char *xn[] = { "loading", "nowifi", "nosignal", "nerd", "audio", "busy" };
+    static const char *xn[] = { "loading", "nowifi", "nosignal", "nerd", "audio", "busy", "picker", "subtitle" };
     save_shot(dir, xn[k]); SDL_RenderPresent(ren);
   }
 }
@@ -797,6 +832,14 @@ int main(int argc, char **argv) {
         else snprintf(l, sizeof l, "TUNING IN");
         ui_busy(!show_osd && (nowifi || plain_loading || tv_buffering()), l,
                 nowifi ? "Turn it on to keep watching" : nview ? view[watch_index]->name : "", !nowifi);
+      }
+      if (!show_osd) { char sub[512]; tv_subtitle(sub, sizeof sub); ui_subtitle(sub); }
+      if (pick_open && SDL_GetTicks() - pick_at > PICK_MS) pick_open = 0;
+      {
+        static const char *tabs[2] = { "Audio", "Subtitles" };
+        PickList l; pick_list(pick_tab, &l);
+        int two = pick_audios() >= 2 && pick_subs();
+        ui_picker(pick_open && !show_osd, two ? tabs : tabs + pick_tab, two ? 2 : 1, two ? pick_tab : 0, l.ptr, l.n, pick_cur, l.in_use);
       }
       if (audio_at && !show_osd && !ui_audio(audio_label, audio_at)) audio_at = 0;
       if (show_osd) {   // stats for nerds (SELECT)

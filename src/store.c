@@ -239,3 +239,38 @@ void audio_pref_set(const char *key, const char *lang, int pos) {
   for (int k = 0; k < naprefs; k++) fprintf(f, "%s %s %d\n", aprefs[k].key, aprefs[k].lang[0] ? aprefs[k].lang : "-", aprefs[k].pos);
   fclose(f);
 }
+
+// --- the subtitles you chose per channel (subs.txt: key, then the language or name, or "-" for off) --------------
+typedef struct { char key[64]; char lang[48]; } SubPref;
+static SubPref *sprefs; static int nsprefs, sprefs_loaded;
+static void sprefs_load(void) {
+  if (sprefs_loaded) return;
+  sprefs_loaded = 1;
+  char p[600]; path(p, sizeof p, "subs.txt");
+  FILE *f = fopen(p, "r"); if (!f) return;
+  char line[160];
+  while (fgets(line, sizeof line, f)) {
+    SubPref a = {0};
+    if (sscanf(line, "%63s %47[^\n]", a.key, a.lang) == 2) {
+      if (!strcmp(a.lang, "-")) a.lang[0] = 0;
+      sprefs = realloc(sprefs, (nsprefs + 1) * sizeof *sprefs); sprefs[nsprefs++] = a;
+    }
+  }
+  fclose(f);
+}
+int sub_pref_get(const char *key, char *lang, size_t n) {
+  sprefs_load();
+  for (int i = 0; i < nsprefs; i++) if (!strcmp(sprefs[i].key, key)) { snprintf(lang, n, "%s", sprefs[i].lang); return 1; }
+  if (n) lang[0] = 0;
+  return 0;
+}
+void sub_pref_set(const char *key, const char *lang) {
+  sprefs_load();
+  int i = 0; while (i < nsprefs && strcmp(sprefs[i].key, key)) i++;
+  if (i == nsprefs) { sprefs = realloc(sprefs, (nsprefs + 1) * sizeof *sprefs); nsprefs++; snprintf(sprefs[i].key, sizeof sprefs[i].key, "%s", key); }
+  snprintf(sprefs[i].lang, sizeof sprefs[i].lang, "%s", lang);
+  char p[600]; path(p, sizeof p, "subs.txt");
+  FILE *f = fopen(p, "w"); if (!f) return;
+  for (int k = 0; k < nsprefs; k++) fprintf(f, "%s %s\n", sprefs[k].key, sprefs[k].lang[0] ? sprefs[k].lang : "-");
+  fclose(f);
+}

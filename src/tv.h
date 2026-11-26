@@ -16,5 +16,11 @@ void tv_render(void);
 void tv_overlay_step(int dir);
 const char *tv_overlay_name(void);
 int tv_nerd(char out[][96], int max);
-void tv_audio_step(int dir, char *label, int n);   // LEFT/RIGHT while watching: the next audio track (remembered per channel)
+// The picker (LEFT/RIGHT while watching): the tracks as labels and the one on (-1 none); choosing one (remembered
+// per channel; subtitles -1 = off).
+int tv_audio_tracks(char labels[][48], int max, int *cur);
+void tv_audio_set(int t);
+int tv_sub_tracks(char labels[][48], int max, int *cur);
+void tv_sub_set(int t);
+void tv_subtitle(char *out, size_t n);   // the subtitle on now, lines split by \n ("" none)
 void tv_hwdec(int on);             // Settings > Hardware decoding (takes effect on the next channel)   // stats for nerds: "LABEL|values" lines, returns how many

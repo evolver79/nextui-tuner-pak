@@ -18,6 +18,8 @@
 #include "tv.h"
 #include "ui.h"
 #include "hwdec.h"
+#include "subs.h"
+#include "cc.h"
 
 #include "dot.h"
 #define SCREEN_W DOT_W   // the device's screen: Brick 1024x768, Smart Pro 1280x720
@@ -30,6 +32,7 @@
 #define AUDIO_START 0.3   // seconds queued before sound (and the clock) starts
 #define AUDIO_START_HEAVY 1.5   // ... for streams above 720p (big segments, Wi-Fi needs a head start)
 
+#define DVB_PAGES 40   // DVB subtitle pages kept: they're decoded with the read-ahead (5 s), live ones come ~3 a second
 typedef struct {
   // set by the decode thread, read by the main loop (under lock)
   SDL_mutex *lock;
@@ -37,6 +40,11 @@ typedef struct {
   int w, h; double sar;                   // video size and sample aspect ratio
   double audio_pts;                       // pts (s) of the end of the audio queued so far
   double video_read;                      // pts (s) of the last video packet read (how far the video runs ahead)
+  double vshift;                          // the picture's timestamp shift (s, ts_join) as last read
+  // when it changed, on the joined timeline: the shift for a moment shown (read ~5 s before it shows) is the one
+  // from the latest change at or before it. (Subtitles beside the stream keep the stream's own timestamps.)
+  struct { double from, shift; } shifts[8]; int nshifts;
+  VttTrack vtt[8]; int nvtt; volatile int vtt_found;   // subtitles beside the stream, found in the background
   int connected, failed, stop;
   // video packets from the demuxer to the video decoder (so a full frame ring never blocks the audio)
   AVPacket *vpkts[VPKTS]; int vp_head, vp_count;
@@ -51,10 +59,17 @@ typedef struct {
   // stats for nerds (set once by the decode thread, or counted)
   char vcodec[24], acodec[24]; double vfps; int arate, ach, variants, variant; long vbitrate; volatile int hw;
   // audio tracks: those that go with the chosen video; the one playing; a switch asked for (LEFT/RIGHT), or -1
-  struct { int idx, ch; char lang[8], codec[16]; } track[8]; int ntracks, atrack; volatile int want_track;
+  struct { int idx, ch, kept; char lang[8], codec[16]; } track[8]; int ntracks, atrack; volatile int want_track;   // kept: read all along
   // copied from the settings and the channel when the stream starts
   int max_h; char langs[256], pref_lang[8]; int pref_pos;
   volatile long long bytes; volatile int damaged, decoded;
+  // closed captions (CEA-608 in the video's SEI): seen at all; wanted (decode them); what they said, when
+  volatile int has_cc, cc_on;
+  // DVB subtitles (bitmaps in the stream): the tracks (found when it opens); the one wanted (-1 none); the pages
+  // decoded, with when they show (a ring; each holds its bitmaps, ARGB, on the decoder's canvas)
+  struct { int idx; char lang[8]; } dvb[6]; int ndvb; volatile int opened, want_dvb;
+  struct DvbPage { double at, end; int cw, ch, n, id; struct { int x, y, w, h; uint32_t *px; } r[8]; } pages[DVB_PAGES]; int npages, page_head;
+  struct { double at, end; char text[256]; } cc[48]; int ncc, cc_head;
 } Stream;
 
 // Stats, logged every 2 s: frames decoded/shown/dropped, render loop rate, upload/present time, queue depths.
@@ -206,6 +221,82 @@ static void ts_join(TsJoin *j, AVPacket *pkt, AVStream *st, int k) {
   j->next[k] = now + (pkt->duration > 0 ? av_rescale_q(pkt->duration, st->time_base, AV_TIME_BASE_Q) : 0);
 }
 
+// Audio packets kept per track, the last AUDIO_KEEP seconds: switching track decodes the new one from where you are.
+#define AUDIO_KEEP 8.0
+#define AKEEP 640
+typedef struct { AVPacket *p[AKEEP]; int head, n; } AudioKeep;
+static void keep_push(AudioKeep *k, const AVPacket *pkt, AVRational tb) {
+  if (k->n == AKEEP) { av_packet_free(&k->p[k->head]); k->head = (k->head + 1) % AKEEP; k->n--; }
+  k->p[(k->head + k->n) % AKEEP] = av_packet_clone(pkt); k->n++;
+  while (k->n > 1) {   // older than AUDIO_KEEP behind the newest: gone
+    AVPacket *o = k->p[k->head];
+    if (o->pts == AV_NOPTS_VALUE || pkt->pts == AV_NOPTS_VALUE || (pkt->pts - o->pts) * av_q2d(tb) < AUDIO_KEEP) break;
+    av_packet_free(&k->p[k->head]); k->head = (k->head + 1) % AKEEP; k->n--;
+  }
+}
+static void keep_free(AudioKeep *k) { while (k->n) { av_packet_free(&k->p[k->head]); k->head = (k->head + 1) % AKEEP; k->n--; } }
+
+// One audio packet: decoded, made 48 kHz stereo, into SDL's queue; audio_pts follows.
+typedef struct { AVCodecContext *ac; SwrContext *swr; AVStream *st; AVFrame *fr; uint8_t *buf; int size; } AudioDec;
+static void decode_audio(Stream *s, AudioDec *a, const AVPacket *pkt) {
+  if (!a->ac || avcodec_send_packet(a->ac, pkt) != 0) return;
+  while (avcodec_receive_frame(a->ac, a->fr) == 0) {
+    AVFrame *fr = a->fr;
+    if (!a->swr) {
+      AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+      swr_alloc_set_opts2(&a->swr, &stereo, AV_SAMPLE_FMT_S16, AUDIO_RATE, &fr->ch_layout, fr->format, fr->sample_rate, 0, NULL);
+      swr_init(a->swr);
+    }
+    int n = swr_get_out_samples(a->swr, fr->nb_samples);
+    if (n * 4 > a->size) { a->size = n * 4; a->buf = realloc(a->buf, a->size); }
+    int got = swr_convert(a->swr, &a->buf, n, (const uint8_t **)fr->extended_data, fr->nb_samples);
+    if (got > 0) {
+      if (!s->audio_started) { SDL_ClearQueuedAudio(s->audio); s->audio_started = 1; }  // drop the snow hiss
+      SDL_QueueAudio(s->audio, a->buf, got * 4);
+      SDL_LockMutex(s->lock);
+      s->audio_pts = frame_pts(fr, a->st) + (double)fr->nb_samples / fr->sample_rate;
+      SDL_UnlockMutex(s->lock);
+    }
+  }
+}
+
+// DVB subtitle pages: decoded in the demuxer (the bitmaps made ARGB), kept with when they show.
+static SDL_atomic_t dvb_ids;   // page ids, unique across streams (the screen keeps its textures by id)
+static void dvb_page_free(struct DvbPage *pg) { for (int i = 0; i < pg->n; i++) free(pg->r[i].px); pg->n = 0; }
+static void dvb_decode(Stream *s, AVCodecContext *dc, AVPacket *pkt) {
+  AVSubtitle sub; int got = 0;
+  if (avcodec_decode_subtitle2(dc, &sub, &got, pkt) < 0 || !got) return;
+  struct DvbPage pg = {0};
+  pg.at = (sub.pts != AV_NOPTS_VALUE ? sub.pts / 1e6 : pkt->pts * av_q2d(dc->pkt_timebase)) + sub.start_display_time / 1000.0;
+  pg.end = sub.end_display_time && sub.end_display_time != UINT32_MAX ? pg.at + (sub.end_display_time - sub.start_display_time) / 1000.0 : -1;
+  pg.cw = dc->width > 0 ? dc->width : 720; pg.ch = dc->height > 0 ? dc->height : 576;
+  for (unsigned r = 0; r < sub.num_rects && pg.n < 8; r++) {
+    AVSubtitleRect *sr = sub.rects[r];
+    if (sr->type != SUBTITLE_BITMAP || sr->w <= 0 || sr->h <= 0 || !sr->data[0] || !sr->data[1]) continue;
+    uint32_t *px = malloc((size_t)sr->w * sr->h * 4), *pal = (uint32_t *)sr->data[1];
+    if (!px) continue;
+    for (int y = 0; y < sr->h; y++) for (int x = 0; x < sr->w; x++) px[y * sr->w + x] = pal[sr->data[0][y * sr->linesize[0] + x]];
+    pg.r[pg.n].x = sr->x; pg.r[pg.n].y = sr->y; pg.r[pg.n].w = sr->w; pg.r[pg.n].h = sr->h; pg.r[pg.n].px = px; pg.n++;
+  }
+  avsubtitle_free(&sub);
+  SDL_LockMutex(s->lock);
+  int i = (s->page_head + s->npages) % DVB_PAGES;
+  if (s->npages == DVB_PAGES) { dvb_page_free(&s->pages[s->page_head]); s->page_head = (s->page_head + 1) % DVB_PAGES; } else s->npages++;
+  pg.id = SDL_AtomicAdd(&dvb_ids, 1) + 1;
+  s->pages[i] = pg;
+  SDL_UnlockMutex(s->lock);
+}
+
+// Closed captions (cc.c): what they say goes into the Stream, with when.
+static void cc_emit(void *ud, double at, double end, const char *text) {
+  Stream *s = ud;
+  SDL_LockMutex(s->lock);
+  int i = (s->cc_head + s->ncc) % 48;
+  if (s->ncc == 48) s->cc_head = (s->cc_head + 1) % 48; else s->ncc++;
+  s->cc[i].at = at; s->cc[i].end = end; snprintf(s->cc[i].text, sizeof s->cc[i].text, "%s", text);
+  SDL_UnlockMutex(s->lock);
+}
+
 static int decode_thread(void *arg) {
   Stream *s = arg;
   AVFormatContext *fmt = avformat_alloc_context();
@@ -255,7 +346,23 @@ static int decode_thread(void *arg) {
     if (pick < 0 && s->ntracks) pick = 0;
     if (pick >= 0) { ai = s->track[pick].idx; s->atrack = pick; } else ai = -1;
   }
-  for (unsigned i = 0; i < fmt->nb_streams; i++) fmt->streams[i]->discard = ((int)i == vi || (int)i == ai) ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+  // The picture and every audio track that goes with it (the others kept a few seconds back: switching picks up
+  // where you are); the rest left out.
+  // In HLS, only the tracks in the picture's own segments (same variant_bitrate): a track in a playlist of its own
+  // would be a download of its own, so it's read only while it plays (switching to it then starts where it's read).
+  {
+    int hls = fmt->iformat && !strcmp(fmt->iformat->name, "hls");
+    AVDictionaryEntry *vb = av_dict_get(fmt->streams[vi]->metadata, "variant_bitrate", NULL, 0);
+    for (int k = 0; k < s->ntracks; k++) {
+      AVDictionaryEntry *ab = av_dict_get(fmt->streams[s->track[k].idx]->metadata, "variant_bitrate", NULL, 0);
+      s->track[k].kept = !hls || (vb && ab && !strcmp(vb->value, ab->value));
+    }
+  }
+  for (unsigned i = 0; i < fmt->nb_streams; i++) {
+    int keep = (int)i == vi || (int)i == ai;
+    for (int k = 0; k < s->ntracks; k++) if (s->track[k].idx == (int)i && s->track[k].kept) keep = 1;
+    fmt->streams[i]->discard = keep ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+  }
 
   AVStream *vst = fmt->streams[vi];
   const AVCodec *vdec = avcodec_find_decoder(vst->codecpar->codec_id);
@@ -278,42 +385,109 @@ static int decode_thread(void *arg) {
   AVStream *ast = ai >= 0 ? fmt->streams[ai] : NULL;
   AVCodecContext *ac = NULL; SwrContext *swr = NULL;
   if (ast && !(ac = open_audio(ast))) ast = NULL;
+  {   // DVB subtitles that go with the picture
+    AVProgram *prog = av_find_program_from_stream(fmt, NULL, vi);
+    unsigned count = prog ? prog->nb_stream_indexes : fmt->nb_streams;
+    for (unsigned k = 0; k < count && s->ndvb < 6; k++) {
+      int i = prog ? (int)prog->stream_index[k] : (int)k;
+      if (fmt->streams[i]->codecpar->codec_id != AV_CODEC_ID_DVB_SUBTITLE) continue;
+      AVDictionaryEntry *e = av_dict_get(fmt->streams[i]->metadata, "language", NULL, 0);
+      s->dvb[s->ndvb].idx = i; snprintf(s->dvb[s->ndvb].lang, sizeof s->dvb[s->ndvb].lang, "%.3s", e ? e->value : "");
+      s->ndvb++;
+    }
+    if (s->ndvb) fprintf(stderr, "subtitles: %d DVB track%s in the stream\n", s->ndvb, s->ndvb > 1 ? "s" : "");
+    s->opened = 1;
+  }
   s->has_audio = ast != NULL;
   if (ast) { snprintf(s->acodec, sizeof s->acodec, "%s", avcodec_get_name(ast->codecpar->codec_id)); s->arate = ast->codecpar->sample_rate; s->ach = ast->codecpar->ch_layout.nb_channels; }
 
-  VideoJob job = { s, vc, vst, NULL };
-  if (use_hw && (job.hw = hwdec_open(vst->codecpar, vst->time_base, s->vfps))) s->hw = 1;
+  AVRational sar0 = av_guess_sample_aspect_ratio(fmt, vst, NULL);
+  VideoJob job = { s, vc, vst, NULL, NULL, sar0.num > 0 && sar0.den > 0 ? av_q2d(sar0) : 1.0 };
+  if (use_hw && (job.hw = hwdec_open(vst->codecpar, vst->time_base, s->vfps))) {
+    s->hw = 1;
+    if (vst->codecpar->height <= 576 && (job.sarc = avcodec_alloc_context3(vdec))) {
+      avcodec_parameters_to_context(job.sarc, vst->codecpar);
+      job.sarc->thread_count = 1; job.sarc->flags |= AV_CODEC_FLAG_LOW_DELAY; job.sarc->skip_loop_filter = AVDISCARD_ALL;
+      if (avcodec_open2(job.sarc, vdec, NULL) < 0) avcodec_free_context(&job.sarc);
+    }
+    if (job.sar != 1.0) fprintf(stderr, "video: pixel shape %d:%d\n", sar0.num, sar0.den);
+  }
   fprintf(stderr, "video: %s %dx%d, %s decoding\n", s->vcodec, vst->codecpar->width, vst->codecpar->height, s->hw ? "hardware" : "software");
   SDL_Thread *vt = SDL_CreateThread(video_thread, "video", &job);
 
   AVPacket *pkt = av_packet_alloc(); AVFrame *fr = av_frame_alloc();
-  uint8_t *abuf = NULL; int abuf_size = 0;
+  AudioDec ad = { ac, swr, ast, fr, NULL, 0 };
+  AudioKeep *keep = calloc(s->ntracks > 0 ? s->ntracks : 1, sizeof *keep);
   TsJoin tj = { {0, 0}, {AV_NOPTS_VALUE, AV_NOPTS_VALUE}, AV_NOPTS_VALUE, 0 };
+  CcState *cc = cc_open();
+  int dvb_now = -1; AVCodecContext *dvbc = NULL;   // the DVB track being read and its decoder
+  int cc_codec = vst->codecpar->codec_id == AV_CODEC_ID_H264 ? 1 : vst->codecpar->codec_id == AV_CODEC_ID_HEVC ? 2 : 0;
   while (!s->stop) {
     int want = s->want_track;
-    if (want >= 0 && want < s->ntracks && want != s->atrack) {   // LEFT/RIGHT: another audio track, the picture goes on
+    if (want >= 0 && want < s->ntracks && want != s->atrack) {   // another audio track, the picture goes on
       s->want_track = -1;
-      if (ai >= 0) fmt->streams[ai]->discard = AVDISCARD_ALL;
-      if (ac) avcodec_free_context(&ac);
-      if (swr) swr_free(&swr);
+      // where you are: the new track's kept packets from there go into the queue, so nothing is skipped
+      double heard = s->audio_pts - (double)SDL_GetQueuedAudioSize(s->audio) / (AUDIO_RATE * 4);
+      if (ad.ac) avcodec_free_context(&ad.ac);
+      if (ad.swr) swr_free(&ad.swr);
+      int old = s->atrack;
+      if (old >= 0 && old < s->ntracks && !s->track[old].kept) fmt->streams[s->track[old].idx]->discard = AVDISCARD_ALL;
       ai = s->track[want].idx; s->atrack = want;
       fmt->streams[ai]->discard = AVDISCARD_DEFAULT;
-      ast = fmt->streams[ai];
-      if (!(ac = open_audio(ast))) ast = NULL;
+      ast = ad.st = fmt->streams[ai];
+      if (!(ad.ac = open_audio(ast))) ast = ad.st = NULL;
       snprintf(s->acodec, sizeof s->acodec, "%s", s->track[want].codec);
       s->arate = ast ? ast->codecpar->sample_rate : 0; s->ach = s->track[want].ch;
-      SDL_ClearQueuedAudio(s->audio);   // the old language's sound goes; the clock waits for the new one
+      SDL_ClearQueuedAudio(s->audio);
       tj.next[1] = AV_NOPTS_VALUE;      // same timeline, same shift: only no last timestamp to compare with
+      int from = 0; AudioKeep *k = &keep[want];
+      for (int i = 0; i < k->n; i++) {
+        AVPacket *q = k->p[(k->head + i) % AKEEP];
+        if (q->pts != AV_NOPTS_VALUE && q->pts * av_q2d(ast ? ast->time_base : (AVRational){1, 1}) < heard - 0.03) from = i + 1;
+      }
+      for (int i = from; ast && i < k->n; i++) decode_audio(s, &ad, k->p[(k->head + i) % AKEEP]);
+      fprintf(stderr, "audio: track %d, %d kept packets from %.2f s\n", want + 1, k->n - from, heard);
       s->has_audio = ast != NULL;
     } else if (want >= 0) s->want_track = -1;
+    if (s->want_dvb != dvb_now) {   // DVB subtitles on, off or another language: read that track only
+      if (dvb_now >= 0) fmt->streams[s->dvb[dvb_now].idx]->discard = AVDISCARD_ALL;
+      if (dvbc) avcodec_free_context(&dvbc);
+      dvb_now = s->want_dvb;
+      SDL_LockMutex(s->lock); while (s->npages) { dvb_page_free(&s->pages[s->page_head]); s->page_head = (s->page_head + 1) % DVB_PAGES; s->npages--; } SDL_UnlockMutex(s->lock);
+      if (dvb_now >= 0 && dvb_now < s->ndvb) {
+        AVStream *st = fmt->streams[s->dvb[dvb_now].idx];
+        const AVCodec *d = avcodec_find_decoder(AV_CODEC_ID_DVB_SUBTITLE);
+        if (d && (dvbc = avcodec_alloc_context3(d))) {
+          avcodec_parameters_to_context(dvbc, st->codecpar); dvbc->pkt_timebase = st->time_base;
+          if (avcodec_open2(dvbc, d, NULL) < 0) avcodec_free_context(&dvbc);
+        }
+        st->discard = AVDISCARD_DEFAULT;
+      } else dvb_now = -1;
+    }
     // Enough read ahead? (audio well queued and video packets waiting, or the packet queue full)
     SDL_LockMutex(s->lock); int vp = s->vp_count; SDL_UnlockMutex(s->lock);
     double aq = (double)SDL_GetQueuedAudioSize(s->audio) / (AUDIO_RATE * 4);
     if (vp >= VPKTS - 1 || ((!ast || aq >= AUDIO_AHEAD) && vp >= 30)) { SDL_Delay(5); continue; }
     if (av_read_frame(fmt, pkt) < 0) { if (!s->connected) { snprintf(s->error, sizeof s->error, "no signal"); s->failed = 1; } break; }
     if (pkt->stream_index == vi || pkt->stream_index == ai) s->bytes += pkt->size;
-    if (pkt->stream_index == vi) ts_join(&tj, pkt, vst, 0);
+    int ti = -1;   // which audio track
+    for (int k = 0; k < s->ntracks; k++) if (s->track[k].idx == pkt->stream_index) ti = k;
+    if (pkt->stream_index == vi) {
+      ts_join(&tj, pkt, vst, 0);
+      if (tj.off[0] / 1e6 != s->vshift && pkt->pts != AV_NOPTS_VALUE) {   // a jump joined: from here on, this shift
+        SDL_LockMutex(s->lock);
+        if (s->nshifts == 8) { memmove(s->shifts, s->shifts + 1, 7 * sizeof *s->shifts); s->nshifts--; }
+        s->shifts[s->nshifts].from = pkt->pts * av_q2d(vst->time_base); s->shifts[s->nshifts].shift = tj.off[0] / 1e6; s->nshifts++;
+        SDL_UnlockMutex(s->lock);
+      }
+      s->vshift = tj.off[0] / 1e6; if (cc_codec && cc_packet(cc, pkt, vst->time_base, cc_codec == 2, s->cc_on, cc_emit, s) && !s->has_cc) { s->has_cc = 1; fprintf(stderr, "subtitles: closed captions in the picture\n"); } }
     else if (ast && pkt->stream_index == ai) ts_join(&tj, pkt, ast, 1);
+    else if (ti >= 0 && tj.off[1]) {   // the other tracks: the playing one's shift (same timeline)
+      int64_t d = av_rescale_q(tj.off[1], AV_TIME_BASE_Q, fmt->streams[pkt->stream_index]->time_base);
+      if (pkt->pts != AV_NOPTS_VALUE) pkt->pts += d;
+      if (pkt->dts != AV_NOPTS_VALUE) pkt->dts += d;
+    }
+    if (ti >= 0) keep_push(&keep[ti], pkt, fmt->streams[pkt->stream_index]->time_base);
     if (pkt->stream_index == vi) {
       SDL_LockMutex(s->lock);
       int64_t vts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
@@ -321,33 +495,28 @@ static int decode_thread(void *arg) {
       s->vpkts[(s->vp_head + s->vp_count) % VPKTS] = av_packet_clone(pkt); s->vp_count++;
       SDL_CondSignal(s->vp_cond);
       SDL_UnlockMutex(s->lock);
-    } else if (ast && pkt->stream_index == ai && avcodec_send_packet(ac, pkt) == 0) {
-      while (avcodec_receive_frame(ac, fr) == 0) {
-        if (!swr) {
-          AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
-          swr_alloc_set_opts2(&swr, &stereo, AV_SAMPLE_FMT_S16, AUDIO_RATE, &fr->ch_layout, fr->format, fr->sample_rate, 0, NULL);
-          swr_init(swr);
-        }
-        int n = swr_get_out_samples(swr, fr->nb_samples);
-        if (n * 4 > abuf_size) { abuf_size = n * 4; abuf = realloc(abuf, abuf_size); }
-        int got = swr_convert(swr, &abuf, n, (const uint8_t **)fr->extended_data, fr->nb_samples);
-        if (got > 0) {
-          if (!s->audio_started) { SDL_ClearQueuedAudio(s->audio); s->audio_started = 1; }  // drop the snow hiss
-          SDL_QueueAudio(s->audio, abuf, got * 4);
-          SDL_LockMutex(s->lock);
-          s->audio_pts = frame_pts(fr, ast) + (double)fr->nb_samples / fr->sample_rate;
-          SDL_UnlockMutex(s->lock);
-        }
+    } else if (ast && pkt->stream_index == ai) decode_audio(s, &ad, pkt);
+    else if (dvbc && dvb_now >= 0 && pkt->stream_index == s->dvb[dvb_now].idx) {
+      if (tj.off[0]) {   // the picture's shift (same timeline)
+        int64_t d = av_rescale_q(tj.off[0], AV_TIME_BASE_Q, fmt->streams[pkt->stream_index]->time_base);
+        if (pkt->pts != AV_NOPTS_VALUE) pkt->pts += d;
+        if (pkt->dts != AV_NOPTS_VALUE) pkt->dts += d;
       }
+      dvb_decode(s, dvbc, pkt);
     }
     av_packet_unref(pkt);
   }
+  cc_close(cc);
+  if (dvbc) avcodec_free_context(&dvbc);
+  for (int k = 0; k < s->ntracks; k++) keep_free(&keep[k]);
+  free(keep);
+  ac = ad.ac; swr = ad.swr;
   SDL_LockMutex(s->lock); s->eof = 1; SDL_CondSignal(s->vp_cond); SDL_UnlockMutex(s->lock);
   SDL_WaitThread(vt, NULL);
   SDL_LockMutex(s->lock);
   while (s->vp_count) { av_packet_free(&s->vpkts[s->vp_head]); s->vp_head = (s->vp_head + 1) % VPKTS; s->vp_count--; }
   SDL_UnlockMutex(s->lock);
-  av_packet_free(&pkt); av_frame_free(&fr); free(abuf);
+  av_packet_free(&pkt); av_frame_free(&fr); free(ad.buf);
   if (swr) swr_free(&swr);
   avcodec_free_context(&vc); if (ac) avcodec_free_context(&ac);
   avformat_close_input(&fmt);
@@ -487,14 +656,25 @@ static void draw_tuning(SDL_Renderer *r, SDL_Texture *img, int iw, int ih, int l
   SDL_SetTextureAlphaMod(snow, 255);
 }
 
+// Looks for subtitles beside an HLS stream (a second fetch of its master playlist), without holding up the picture.
+// The Stream is never freed (see stop_stream), so this may finish after it stopped.
+static int vtt_find_thread(void *arg) {
+  Stream *st = arg; VttTrack found[8];
+  int n = vtt_find(st->url, st->user_agent, found, 8);
+  SDL_LockMutex(st->lock); memcpy(st->vtt, found, sizeof found); st->nvtt = n; st->vtt_found = 1; SDL_UnlockMutex(st->lock);
+  if (n) fprintf(stderr, "subtitles: %d track%s beside the stream\n", n, n > 1 ? "s" : "");
+  return 0;
+}
 static Stream *start_stream(const Channel *c, SDL_AudioDeviceID audio) {
   Stream *s = calloc(1, sizeof *s);
   s->lock = SDL_CreateMutex(); s->vp_cond = SDL_CreateCond(); s->url = c->url; s->user_agent = c->user_agent; s->audio = audio; s->sar = 1;
-  s->want_track = -1; s->max_h = set ? set->max_height : 720;
+  s->want_track = -1; s->want_dvb = -1; s->max_h = set ? set->max_height : 720;
   if (set) snprintf(s->langs, sizeof s->langs, "%s", set->languages);
   s->pref_pos = audio_pref_get(c->key, s->pref_lang, sizeof s->pref_lang);
   SDL_ClearQueuedAudio(audio);
   SDL_DetachThread(SDL_CreateThread(decode_thread, "decode", s));
+  if (strstr(c->url, "m3u")) SDL_DetachThread(SDL_CreateThread(vtt_find_thread, "vttfind", s));
+  else s->vtt_found = 1;
   return s;
 }
 // Stopping a stream: the thread notices s->stop (also via ffmpeg's interrupt callback) and exits on its own.
@@ -518,6 +698,12 @@ static Stream *s;
 static ImageJob *ijob;
 static SDL_Texture *itex; static int iw, ih, ilogo;
 static int retries, no_signal, playing;
+// Subtitles on (WebVTT beside the stream): the track (-1 none), its follower; whether the channel's choice was applied;
+// the clock of the last frame (subtitles are timed on it).
+#define SUB_CC 100    // sub_on: the closed captions
+#define SUB_DVB 200   // sub_on: SUB_DVB + the DVB track
+static int sub_on = -1, sub_checked; static Vtt *vtt_on; static double last_clock;
+static void subs_off(void) { vtt_stop(vtt_on); vtt_on = NULL; if (s) { s->cc_on = 0; s->want_dvb = -1; } sub_on = -1; sub_checked = 0; }
 static const char *fail_reason = "";   // why the channel gave up, in plain words
 static Uint32 started_at, changed_at, shown_at;   // shown_at: ticks of the last new picture (tv_buffering)
 static double wall_clock, video_offset; static Uint64 wall_at;
@@ -609,7 +795,7 @@ void tv_tune(Channel *c) {
   if (itex) { SDL_DestroyTexture(itex); itex = NULL; }
   SDL_PauseAudioDevice(audio, 1); SDL_ClearQueuedAudio(audio);
   cur_ch = c;
-  retries = no_signal = playing = rebuf = 0; wall_at = 0; video_offset = 0; shown_at = 0; crop_reset();
+  retries = no_signal = playing = rebuf = 0; wall_at = 0; video_offset = 0; shown_at = 0; crop_reset(); subs_off();
   started_at = changed_at = SDL_GetTicks();
   if (!c) { if (video) { SDL_DestroyTexture(video); video = NULL; } return; }
   s = start_stream(c, audio);
@@ -688,17 +874,94 @@ static void track_label(const Stream *st, int t, char *b, size_t n) {
   for (char *q = lang; *q; q++) if (*q >= 'a' && *q <= 'z') *q -= 32;
   snprintf(b, n, "%s %s %s", lang, cn, chs);
 }
-// LEFT/RIGHT while watching: the next audio track; says which in `label`, and remembers it for this channel.
-void tv_audio_step(int dir, char *label, int n) {
-  if (!s || !cur_ch) { snprintf(label, n, "NO CHANNEL"); return; }
-  if (s->ntracks < 2) { snprintf(label, n, s->ntracks ? "ONE AUDIO TRACK" : "NO AUDIO"); return; }
-  int cur = s->want_track >= 0 ? s->want_track : s->atrack;
-  int t = (cur + dir + s->ntracks) % s->ntracks;
+// --- the picker (LEFT/RIGHT while watching): audio tracks and subtitles ----------------------------------------
+int tv_audio_tracks(char labels[][48], int max, int *cur) {
+  *cur = -1;
+  if (!s) return 0;
+  int n = s->ntracks < max ? s->ntracks : max;
+  for (int t = 0; t < n; t++) track_label(s, t, labels[t], 48);
+  *cur = s->want_track >= 0 ? s->want_track : s->atrack;
+  return n;
+}
+void tv_audio_set(int t) {
+  if (!s || !cur_ch || t < 0 || t >= s->ntracks) return;
   s->want_track = t;
-  char l[48]; track_label(s, t, l, sizeof l);
-  snprintf(label, n, "AUDIO %d/%d: %s", t + 1, s->ntracks, l);
   audio_pref_set(cur_ch->key, s->track[t].lang, t);
 }
+// The subtitle choices, in the picker's order: the WebVTT tracks, the closed captions (once the picture has shown
+// it carries some), the DVB tracks. Each as its sub_on code.
+static int sub_codes(int *code, int max) {
+  int n = 0;
+  for (int t = 0; t < s->nvtt && n < max; t++) code[n++] = t;
+  if ((s->has_cc || sub_on == SUB_CC) && n < max) code[n++] = SUB_CC;
+  for (int t = 0; t < s->ndvb && n < max; t++) code[n++] = SUB_DVB + t;
+  return n;
+}
+int tv_sub_tracks(char labels[][48], int max, int *cur) {
+  *cur = -1;
+  if (!s) return 0;
+  SDL_LockMutex(s->lock);
+  int code[24], n = sub_codes(code, max < 24 ? max : 24);
+  for (int i = 0; i < n; i++) {
+    int c = code[i]; char lang[8] = "";
+    if (c == sub_on) *cur = i;
+    if (c == SUB_CC) { snprintf(labels[i], 48, "Closed captions (CC1)"); continue; }
+    const char *l = c >= SUB_DVB ? s->dvb[c - SUB_DVB].lang : s->vtt[c].lang;
+    snprintf(lang, sizeof lang, "%s", l); for (char *q = lang; *q; q++) if (*q >= 'a' && *q <= 'z') *q -= 32;
+    if (c >= SUB_DVB) snprintf(labels[i], 48, "%s · DVB", lang[0] ? lang : "Subtitles");
+    else if (lang[0] && strcasecmp(s->vtt[c].name, s->vtt[c].lang)) snprintf(labels[i], 48, "%s · %s", s->vtt[c].name, lang);
+    else snprintf(labels[i], 48, "%s", lang[0] ? lang : s->vtt[c].name);
+  }
+  SDL_UnlockMutex(s->lock);
+  return n;
+}
+// Turns on the subtitles with that sub_on code (-1: off), remembering it for the channel when `remember`.
+static void sub_turn_on(int c, int remember) {
+  vtt_stop(vtt_on); vtt_on = NULL; s->cc_on = 0; s->want_dvb = -1; sub_on = -1;
+  SDL_LockMutex(s->lock); s->ncc = 0; SDL_UnlockMutex(s->lock);
+  char pref[48] = "";
+  if (c >= 0 && c < s->nvtt) { vtt_on = vtt_start(&s->vtt[c], s->user_agent); sub_on = c; snprintf(pref, sizeof pref, "%s", s->vtt[c].lang[0] ? s->vtt[c].lang : s->vtt[c].name); }
+  else if (c == SUB_CC) { s->cc_on = 1; sub_on = SUB_CC; snprintf(pref, sizeof pref, "CC1"); }
+  else if (c >= SUB_DVB && c - SUB_DVB < s->ndvb) { s->want_dvb = c - SUB_DVB; sub_on = c; snprintf(pref, sizeof pref, "dvb:%s", s->dvb[c - SUB_DVB].lang); }
+  if (remember) sub_pref_set(cur_ch->key, pref);
+}
+void tv_sub_set(int t) {
+  if (!s || !cur_ch) return;
+  int code[24], n = sub_codes(code, 24);
+  sub_turn_on(t >= 0 && t < n ? code[t] : -1, 1);
+  sub_checked = 1;
+}
+// The subtitle on now ("" none). Also applies the channel's remembered choice once its subtitles are found.
+void tv_subtitle(char *out, size_t n) {
+  out[0] = 0;
+  if (!s || !cur_ch) return;
+  if (!sub_checked && s->vtt_found && s->opened) {   // the channel's choice, once its subtitles are known
+    sub_checked = 1;
+    char want[48];
+    if (sub_pref_get(cur_ch->key, want, sizeof want) && want[0]) {
+      if (!strcmp(want, "CC1")) sub_turn_on(SUB_CC, 0);   // (shown once the picture brings some)
+      else if (!strncmp(want, "dvb:", 4)) { for (int t = 0; t < s->ndvb; t++) if (!strcmp(s->dvb[t].lang, want + 4) || lang_match(s->dvb[t].lang, want + 4)) { sub_turn_on(SUB_DVB + t, 0); break; } }
+      else for (int t = 0; t < s->nvtt; t++)
+        if (lang_match(s->vtt[t].lang, want) || !strcmp(s->vtt[t].name, want)) { sub_turn_on(t, 0); break; }
+    }
+  }
+  if (!playing || no_signal) return;
+  if (vtt_on) {   // on the stream's own clock: less the shift in effect for what's shown
+    double t = last_clock - video_offset, shift = 0;
+    SDL_LockMutex(s->lock);
+    for (int i = 0; i < s->nshifts; i++) if (s->shifts[i].from <= t) shift = s->shifts[i].shift;
+    SDL_UnlockMutex(s->lock);
+    vtt_text_at(vtt_on, t - shift, out, n);
+  }
+  else if (sub_on == SUB_CC) {   // the last caption from before now (cleared captions come as an empty one), 15 s at most
+    double now = last_clock - video_offset; int best = -1;
+    SDL_LockMutex(s->lock);
+    for (int i = 0; i < s->ncc; i++) { int k = (s->cc_head + i) % 48; if (s->cc[k].at <= now && (best < 0 || s->cc[k].at >= s->cc[best].at)) best = k; }
+    if (best >= 0 && now - s->cc[best].at < 15 && (s->cc[best].end < 0 || now < s->cc[best].end)) snprintf(out, n, "%s", s->cc[best].text);
+    SDL_UnlockMutex(s->lock);
+  }
+}
+
 
 // Stats for nerds: "LABEL|values" lines about the picture, sound, stream and device. Never an address or a login.
 int tv_nerd(char out[][96], int max) {
@@ -734,6 +997,45 @@ int tv_nerd(char out[][96], int max) {
   return n;
 }
 
+// The DVB page on now, over the picture: its canvas mapped onto the frame, then as the frame is shown (src: the part
+// of the frame on screen, after cropping; dst: where). A bitmap the crop would cut off is moved back inside.
+static SDL_Texture *dvb_tex[8]; static SDL_Rect dvb_at[8]; static int dvb_ntex, dvb_page_shown = -1, dvb_cw, dvb_ch;
+static void dvb_draw(SDL_Rect src, SDL_Rect dst) {
+  double now = last_clock - video_offset;
+  SDL_LockMutex(s->lock);
+  int best = -1;
+  for (int i = 0; i < s->npages; i++) { int k = (s->page_head + i) % DVB_PAGES; if (s->pages[k].at <= now && (best < 0 || s->pages[k].at >= s->pages[best].at)) best = k; }
+  int on = best >= 0 && (s->pages[best].end < 0 || now < s->pages[best].end) && now - s->pages[best].at < 60;
+  int id = on ? s->pages[best].id : -1;
+  if (id != dvb_page_shown) {   // a new page: its bitmaps as textures
+    for (int i = 0; i < dvb_ntex; i++) SDL_DestroyTexture(dvb_tex[i]);
+    dvb_ntex = 0; dvb_page_shown = id;
+    if (on) {
+      struct DvbPage *pg = &s->pages[best]; dvb_cw = pg->cw; dvb_ch = pg->ch;
+      for (int i = 0; i < pg->n; i++) {
+        SDL_Texture *tx = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, pg->r[i].w, pg->r[i].h);
+        if (!tx) continue;
+        SDL_UpdateTexture(tx, NULL, pg->r[i].px, pg->r[i].w * 4); SDL_SetTextureBlendMode(tx, SDL_BLENDMODE_BLEND);
+        dvb_tex[dvb_ntex] = tx; dvb_at[dvb_ntex] = (SDL_Rect){ pg->r[i].x, pg->r[i].y, pg->r[i].w, pg->r[i].h }; dvb_ntex++;
+      }
+    }
+  }
+  SDL_UnlockMutex(s->lock);
+  if (!dvb_ntex || !src.w || !src.h) return;
+  double fx = (double)tex_w / dvb_cw, fy = (double)tex_h / dvb_ch;   // canvas -> frame
+  double sx = (double)dst.w / src.w, sy = (double)dst.h / src.h;     // frame -> screen
+  for (int i = 0; i < dvb_ntex; i++) {
+    SDL_Rect r = dvb_at[i], o;
+    o.x = dst.x + (int)lround((r.x * fx - src.x) * sx); o.y = dst.y + (int)lround((r.y * fy - src.y) * sy);
+    o.w = (int)lround(r.w * fx * sx); o.h = (int)lround(r.h * fy * sy);
+    if (o.y + o.h > dst.y + dst.h) o.y = dst.y + dst.h - o.h;   // (cropped away: back inside)
+    if (o.y < dst.y) o.y = dst.y;
+    if (o.x < dst.x) o.x = dst.x;
+    if (o.x + o.w > dst.x + dst.w) o.x = dst.x + dst.w - o.w;
+    SDL_RenderCopy(ren, dvb_tex[i], NULL, &o);
+  }
+}
+
 // Watchdog, start buffer and A/V sync, then the picture (or the tuning screen, or NO SIGNAL) and the overlay.
 void tv_render(void) {
   if (!cur_ch) return;
@@ -752,7 +1054,7 @@ void tv_render(void) {
       else {
         retries++;
         fprintf(stderr, "%s: %s, reconnecting (try %d)\n", cur_ch->name, why, retries);
-        stop_stream(s); s = start_stream(cur_ch, audio); started_at = now_t; playing = rebuf = 0; wall_at = 0; video_offset = 0;
+        stop_stream(s); s = start_stream(cur_ch, audio); started_at = now_t; playing = rebuf = 0; wall_at = 0; video_offset = 0; subs_off();
       }
     } else if (conn && now_t - last < 1000 && now_t - started_at > 30000) retries = 0;  // healthy again
   }
@@ -818,6 +1120,7 @@ void tv_render(void) {
       clock = wall_clock + (double)(nowc - wall_at) / SDL_GetPerformanceFrequency();
       wall_clock = clock; wall_at = nowc;
     }
+    last_clock = clock;
     AVFrame *show = NULL;
     // Timestamp jumps are joined in the demuxer (ts_join), so the picture and the sound share one timeline: a
     // picture behind the sound drops frames until it catches up, one ahead waits. (HLS with the audio in a playlist
@@ -859,6 +1162,7 @@ void tv_render(void) {
       if (sh > SCREEN_H) { sh = SCREEN_H; sw = SCREEN_H * aspect; }
       SDL_Rect dst = { (int)((SCREEN_W - sw) / 2), (int)((SCREEN_H - sh) / 2), (int)sw, (int)sh };
       SDL_RenderCopy(ren, video, &src, &dst);
+      if (sub_on >= SUB_DVB) dvb_draw(src, dst);
     }
   }
   if (SDL_GetTicks() - osd_at >= 1000) { osd_fps = osd_frames * 1000.0 / (SDL_GetTicks() - osd_at + 1); osd_frames = 0; osd_at = SDL_GetTicks(); }
