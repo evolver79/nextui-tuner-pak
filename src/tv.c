@@ -25,7 +25,8 @@
 #define AUDIO_RATE 48000
 #define VQ 6        // decoded video frames buffered ahead
 #define VPKTS 512   // video packets buffered between demuxer and decoder
-#define AUDIO_AHEAD 1.0   // seconds of decoded audio the demuxer keeps queued
+#define AUDIO_AHEAD 5.0   // seconds of decoded audio the demuxer keeps queued: a whole HLS segment (Pluto: 5 s), so a
+                          // slow fetch of the next one is covered (1 s ran dry at every slow segment)
 #define AUDIO_START 0.3   // seconds queued before sound (and the clock) starts
 #define AUDIO_START_HEAVY 1.5   // ... for streams above 720p (big segments, Wi-Fi needs a head start)
 
@@ -35,6 +36,7 @@ typedef struct {
   AVFrame *frames[VQ]; int head, count;   // ring of decoded, display-ready yuv420p frames
   int w, h; double sar;                   // video size and sample aspect ratio
   double audio_pts;                       // pts (s) of the end of the audio queued so far
+  double video_read;                      // pts (s) of the last video packet read (how far the video runs ahead)
   int connected, failed, stop;
   // video packets from the demuxer to the video decoder (so a full frame ring never blocks the audio)
   AVPacket *vpkts[VPKTS]; int vp_head, vp_count;
@@ -167,6 +169,34 @@ static AVCodecContext *open_audio(AVStream *ast) {
   return ac;
 }
 
+// Timestamp jumps: FAST channels splice in ads (#EXT-X-DISCONTINUITY) whose timestamps restart. Packets are joined
+// onto one timeline here, before decoding, with the same shift for the sound and the picture, so each piece keeps its
+// own lip sync. The first of the two to cross a jump sets the shift; the other takes the same one when it crosses
+// (its new timestamps land near where the first one's did). A packet that fits the other's timeline is a gap, not
+// a jump (the sound missing for a while): it keeps its timestamps.
+#define TS_JUMP 1000000   // µs off the expected timestamp: a jump
+#define TS_NEAR 2500000   // µs: the same jump (sound and picture are muxed up to a second or two apart), or a gap
+typedef struct { int64_t off[2], next[2], jump_raw, jump_off; } TsJoin;   // [0] video, [1] audio; µs
+static void ts_join(TsJoin *j, AVPacket *pkt, AVStream *st, int k) {
+  int64_t ts = pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts;
+  if (ts == AV_NOPTS_VALUE) return;
+  int64_t raw = av_rescale_q(ts, st->time_base, AV_TIME_BASE_Q), now = raw + j->off[k];
+  if (j->next[k] != AV_NOPTS_VALUE && llabs(now - j->next[k]) > TS_JUMP) {
+    const char *how;
+    if (j->jump_raw != AV_NOPTS_VALUE && llabs(raw - j->jump_raw) < TS_NEAR && j->off[k] != j->jump_off) { j->off[k] = j->jump_off; how = "follows"; }
+    else if (j->next[!k] != AV_NOPTS_VALUE && llabs(now - j->next[!k]) < TS_NEAR) how = "gap, kept";
+    else { j->off[k] = j->next[k] - raw; j->jump_off = j->off[k]; j->jump_raw = raw; how = "joined"; }
+    fprintf(stderr, "timestamps: %s jumped %+.2f s (%s, shift %+.2f s)\n", k ? "audio" : "video", (now - j->next[k]) / 1e6, how, j->off[k] / 1e6);
+    now = raw + j->off[k];
+  }
+  if (j->off[k]) {
+    int64_t d = av_rescale_q(j->off[k], AV_TIME_BASE_Q, st->time_base);
+    if (pkt->pts != AV_NOPTS_VALUE) pkt->pts += d;
+    if (pkt->dts != AV_NOPTS_VALUE) pkt->dts += d;
+  }
+  j->next[k] = now + (pkt->duration > 0 ? av_rescale_q(pkt->duration, st->time_base, AV_TIME_BASE_Q) : 0);
+}
+
 static int decode_thread(void *arg) {
   Stream *s = arg;
   AVFormatContext *fmt = avformat_alloc_context();
@@ -249,6 +279,7 @@ static int decode_thread(void *arg) {
 
   AVPacket *pkt = av_packet_alloc(); AVFrame *fr = av_frame_alloc();
   uint8_t *abuf = NULL; int abuf_size = 0;
+  TsJoin tj = { {0, 0}, {AV_NOPTS_VALUE, AV_NOPTS_VALUE}, AV_NOPTS_VALUE, 0 };
   while (!s->stop) {
     int want = s->want_track;
     if (want >= 0 && want < s->ntracks && want != s->atrack) {   // LEFT/RIGHT: another audio track, the picture goes on
@@ -262,7 +293,8 @@ static int decode_thread(void *arg) {
       if (!(ac = open_audio(ast))) ast = NULL;
       snprintf(s->acodec, sizeof s->acodec, "%s", s->track[want].codec);
       s->arate = ast ? ast->codecpar->sample_rate : 0; s->ach = s->track[want].ch;
-      SDL_ClearQueuedAudio(s->audio);   // the old language's sound goes; the clock runs on the wall until the new one comes
+      SDL_ClearQueuedAudio(s->audio);   // the old language's sound goes; the clock waits for the new one
+      tj.next[1] = AV_NOPTS_VALUE;      // same timeline, same shift: only no last timestamp to compare with
       s->has_audio = ast != NULL;
     } else if (want >= 0) s->want_track = -1;
     // Enough read ahead? (audio well queued and video packets waiting, or the packet queue full)
@@ -271,8 +303,12 @@ static int decode_thread(void *arg) {
     if (vp >= VPKTS - 1 || ((!ast || aq >= AUDIO_AHEAD) && vp >= 30)) { SDL_Delay(5); continue; }
     if (av_read_frame(fmt, pkt) < 0) { if (!s->connected) { snprintf(s->error, sizeof s->error, "no signal"); s->failed = 1; } break; }
     if (pkt->stream_index == vi || pkt->stream_index == ai) s->bytes += pkt->size;
+    if (pkt->stream_index == vi) ts_join(&tj, pkt, vst, 0);
+    else if (ast && pkt->stream_index == ai) ts_join(&tj, pkt, ast, 1);
     if (pkt->stream_index == vi) {
       SDL_LockMutex(s->lock);
+      int64_t vts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+      if (vts != AV_NOPTS_VALUE) s->video_read = vts * av_q2d(vst->time_base);
       s->vpkts[(s->vp_head + s->vp_count) % VPKTS] = av_packet_clone(pkt); s->vp_count++;
       SDL_CondSignal(s->vp_cond);
       SDL_UnlockMutex(s->lock);
@@ -476,6 +512,7 @@ static int retries, no_signal, playing;
 static const char *fail_reason = "";   // why the channel gave up, in plain words
 static Uint32 started_at, changed_at, shown_at;   // shown_at: ticks of the last new picture (tv_buffering)
 static double wall_clock, video_offset; static Uint64 wall_at;
+static int rebuf;   // the sound ran dry while playing: the clock (and the picture) wait until it's queued again
 static int osd_frames, osd_drops; static Uint32 osd_at; static double osd_fps;
 static double nerd_av, nerd_dec_fps, nerd_kbps, nerd_loop_fps; static int nerd_loops, nerd_dec_last; static long long nerd_bytes_last;
 
@@ -560,7 +597,7 @@ void tv_tune(Channel *c) {
   if (itex) { SDL_DestroyTexture(itex); itex = NULL; }
   SDL_PauseAudioDevice(audio, 1); SDL_ClearQueuedAudio(audio);
   cur_ch = c;
-  retries = no_signal = playing = 0; wall_at = 0; video_offset = 0; shown_at = 0; crop_reset();
+  retries = no_signal = playing = rebuf = 0; wall_at = 0; video_offset = 0; shown_at = 0; crop_reset();
   started_at = changed_at = SDL_GetTicks();
   if (!c) { if (video) { SDL_DestroyTexture(video); video = NULL; } return; }
   s = start_stream(c, audio);
@@ -576,7 +613,7 @@ int tv_retries(void) { return cur_ch && !no_signal ? retries : 0; }
 int tv_buffering(void) {
   if (!cur_ch || !s || no_signal || !playing || !shown_at || SDL_GetTicks() - shown_at < 1000) return 0;
   SDL_LockMutex(s->lock); int frames = s->count; SDL_UnlockMutex(s->lock);
-  return !frames && (!s->has_audio || SDL_GetQueuedAudioSize(audio) < AUDIO_RATE * 4 / 20);
+  return rebuf || (!frames && (!s->has_audio || SDL_GetQueuedAudioSize(audio) < AUDIO_RATE * 4 / 20));
 }
 void tv_overlay_step(int dir) { set->overlay = (set->overlay + dir + NOVERLAYS) % NOVERLAYS; settings_save(set); }
 const char *tv_overlay_name(void) { return OVERLAY_NAMES[set->overlay % NOVERLAYS]; }
@@ -703,7 +740,7 @@ void tv_render(void) {
       else {
         retries++;
         fprintf(stderr, "%s: %s, reconnecting (try %d)\n", cur_ch->name, why, retries);
-        stop_stream(s); s = start_stream(cur_ch, audio); started_at = now_t; playing = 0; wall_at = 0;
+        stop_stream(s); s = start_stream(cur_ch, audio); started_at = now_t; playing = rebuf = 0; wall_at = 0;
       }
     } else if (conn && now_t - last < 1000 && now_t - started_at > 30000) retries = 0;  // healthy again
   }
@@ -732,15 +769,28 @@ void tv_render(void) {
       ui_notice(m);
     }
   } else {
-    // Clock: the audio being heard (end of queued audio minus what's still queued). If the audio runs dry (or there
-    // is none), the clock runs on the wall clock so the picture never freezes waiting for sound.
+    // Clock: the audio being heard (end of queued audio minus what's still queued). When the sound runs dry (the
+    // Wi-Fi stalls, another audio track is coming), the clock stops and the picture waits with it, then both go on
+    // together once enough sound is queued again. Only when the stream carries on without sound (its video read
+    // well past its audio, or there is none) does the clock run on the wall, so the picture never freezes for it.
     SDL_LockMutex(s->lock);
     double clock;
     Uint64 nowc = SDL_GetPerformanceCounter();
-    if (s->has_audio && queued > 0.02) {
+    int no_sound = !s->has_audio || s->video_read - s->audio_pts > 2.0;
+    if (!rebuf && !no_sound && queued <= 0.02) {
+      rebuf = 1; SDL_PauseAudioDevice(audio, 1);
+      fprintf(stderr, "audio ran dry: clock paused at %.2f s\n", wall_clock);
+    } else if (rebuf && (no_sound || (queued >= (s->heavy ? AUDIO_START_HEAVY : AUDIO_START) && (s->count == VQ || queued >= 2.0)))) {
+      // (the picture ready too: its frames come out of the decoder a little after the sound, and starting
+      // without them means dropping the ones that come late)
+      rebuf = 0; SDL_PauseAudioDevice(audio, 0);
+      fprintf(stderr, "audio back (%.0f ms queued): clock goes on\n", queued * 1000);
+    }
+    if (rebuf && wall_at) { clock = wall_clock; wall_at = nowc; }   // stopped
+    else if (s->has_audio && queued > 0.02) {
       // The queued amount only drops a whole audio chunk (~21 ms) at a time, so the raw audio clock moves in steps,
       // which bunches up 50 fps frames and drops some. Run smoothly on the timer and ease towards the audio clock;
-      // snap only when they are far apart (a new channel, a jump).
+      // snap only when they are far apart (a new channel, another audio track).
       double measured = s->audio_pts - queued;
       double predicted = wall_at ? wall_clock + (double)(nowc - wall_at) / SDL_GetPerformanceFrequency() : measured;
       double diff = measured - predicted;
@@ -750,6 +800,7 @@ void tv_render(void) {
     else {
       if (!wall_at) { wall_clock = s->count ? s->frames[s->head]->pts / 1e6 : 0; wall_at = nowc; }
       clock = wall_clock + (double)(nowc - wall_at) / SDL_GetPerformanceFrequency();
+      wall_clock = clock; wall_at = nowc;
     }
     AVFrame *show = NULL;
     // A frame more than 1.5 s from the clock means the timeline jumped (FAST channels splice in ads with
@@ -798,10 +849,11 @@ void tv_render(void) {
   Uint32 now = SDL_GetTicks();
   if (now - st_last >= 5000 && playing) {
     double sec = (now - st_last) / 1000.0;
-    SDL_LockMutex(s->lock); int q = s->count, w = s->w, h = s->h; SDL_UnlockMutex(s->lock);
-    fprintf(stderr, "stats %dx%d: decoded %.1f fps, shown %.1f fps, dropped %d, jumps %d, upload %.1f ms, vqueue %d, audio %.0f ms\n",
+    double aq = SDL_GetQueuedAudioSize(audio) / (double)(AUDIO_RATE * 4);
+    SDL_LockMutex(s->lock); int q = s->count, w = s->w, h = s->h, vp = s->vp_count; double vahead = s->video_read - (s->audio_pts - aq); SDL_UnlockMutex(s->lock);
+    fprintf(stderr, "stats %dx%d: decoded %.1f fps, shown %.1f fps, dropped %d, jumps %d, upload %.1f ms, vqueue %d, audio %.0f ms, vpkts %d, video read %.1f s ahead\n",
             w, h, st_decoded / sec, st_shown / sec, st_dropped, st_jumps, st_shown ? st_upload_ms / st_shown : 0, q,
-            SDL_GetQueuedAudioSize(audio) * 1000.0 / (AUDIO_RATE * 4));
+            aq * 1000, vp, vahead);
     st_decoded = st_shown = st_dropped = st_loops = st_jumps = 0; st_upload_ms = st_present_ms = 0; st_last = now;
   }
 }
