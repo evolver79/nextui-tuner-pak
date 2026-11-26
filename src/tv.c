@@ -68,7 +68,9 @@ static double frame_pts(AVFrame *f, AVStream *st) {
 
 static int interrupt_cb(void *opaque) { return ((Stream *)opaque)->stop; }
 
-typedef struct { Stream *s; AVCodecContext *vc; AVStream *vst; HwDec *hw; } VideoJob;
+// sarc: with the video engine, which only gives square pixels, a small software decoder that SD streams' key frames
+// also go through, just for their pixel shape (720x576 and 720x480 carry 4:3 or 16:9 in it, and channels switch).
+typedef struct { Stream *s; AVCodecContext *vc; AVStream *vst; HwDec *hw; AVCodecContext *sarc; double sar; } VideoJob;
 static Settings *set;   // the app's settings (tv_setup)
 static int use_hw = 1;   // Settings > Hardware decoding
 void tv_hwdec(int on) { use_hw = on; }
@@ -102,13 +104,19 @@ static int video_thread(void *arg) {
     SDL_UnlockMutex(s->lock);
     if (j->hw) {   // the video engine: hand it the packet, take what pictures are ready
       int r, err = 0, stopped = 0;
+      if (j->sarc && (pkt->flags & AV_PKT_FLAG_KEY)) {
+        if (avcodec_send_packet(j->sarc, pkt) == 0) while (avcodec_receive_frame(j->sarc, fr) == 0) av_frame_unref(fr);
+        AVRational q = j->sarc->sample_aspect_ratio;
+        if (q.num > 0 && q.den > 0 && fabs(av_q2d(q) - j->sar) > 0.001) { j->sar = av_q2d(q); fprintf(stderr, "video: pixel shape %d:%d\n", q.num, q.den); }
+        avcodec_flush_buffers(j->sarc);
+      }
       for (int spins = 0; (r = hwdec_send(j->hw, pkt)) == AVERROR(EAGAIN) && !s->stop && spins < 500; spins++) {
         AVFrame *f; int n = 0;
-        while (!stopped && (f = hwdec_receive(j->hw, &err))) { n++; if (ring_put(s, f, 1.0, 0) < 0) stopped = 1; }
+        while (!stopped && (f = hwdec_receive(j->hw, &err))) { n++; if (ring_put(s, f, j->sar, 0) < 0) stopped = 1; }
         if (!n) SDL_Delay(2);
       }
       AVFrame *f;
-      while (!stopped && r >= 0 && (f = hwdec_receive(j->hw, &err))) if (ring_put(s, f, 1.0, 0) < 0) stopped = 1;
+      while (!stopped && r >= 0 && (f = hwdec_receive(j->hw, &err))) if (ring_put(s, f, j->sar, 0) < 0) stopped = 1;
       if (r < 0 && r != AVERROR(EAGAIN)) err = 1;
       if (err) {   // the engine gave up on this stream: on in software from the next key frame
         fprintf(stderr, "hwdec: failed, decoding in software\n");
@@ -137,6 +145,7 @@ static int video_thread(void *arg) {
   av_frame_free(&fr);
   if (sws) sws_freeContext(sws);
   if (j->hw) { hwdec_close(j->hw); j->hw = NULL; }
+  if (j->sarc) avcodec_free_context(&j->sarc);
   return 0;
 }
 
@@ -513,6 +522,9 @@ static const char *fail_reason = "";   // why the channel gave up, in plain word
 static Uint32 started_at, changed_at, shown_at;   // shown_at: ticks of the last new picture (tv_buffering)
 static double wall_clock, video_offset; static Uint64 wall_at;
 static int rebuf;   // the sound ran dry while playing: the clock (and the picture) wait until it's queued again
+// How much sound to wait for before going on: AUDIO_START, doubled each time it runs dry again within 10 s (up to
+// 4 s), so a stream that comes barely fast enough plays in longer stretches instead of stuttering.
+static double rebuf_need; static Uint32 rebuf_last;
 static int osd_frames, osd_drops; static Uint32 osd_at; static double osd_fps;
 static double nerd_av, nerd_dec_fps, nerd_kbps, nerd_loop_fps; static int nerd_loops, nerd_dec_last; static long long nerd_bytes_last;
 
@@ -740,7 +752,7 @@ void tv_render(void) {
       else {
         retries++;
         fprintf(stderr, "%s: %s, reconnecting (try %d)\n", cur_ch->name, why, retries);
-        stop_stream(s); s = start_stream(cur_ch, audio); started_at = now_t; playing = rebuf = 0; wall_at = 0;
+        stop_stream(s); s = start_stream(cur_ch, audio); started_at = now_t; playing = rebuf = 0; wall_at = 0; video_offset = 0;
       }
     } else if (conn && now_t - last < 1000 && now_t - started_at > 30000) retries = 0;  // healthy again
   }
@@ -778,9 +790,13 @@ void tv_render(void) {
     Uint64 nowc = SDL_GetPerformanceCounter();
     int no_sound = !s->has_audio || s->video_read - s->audio_pts > 2.0;
     if (!rebuf && !no_sound && queued <= 0.02) {
+      double base = s->heavy ? AUDIO_START_HEAVY : AUDIO_START;
+      rebuf_need = rebuf_last && SDL_GetTicks() - rebuf_last < 10000 ? (rebuf_need * 2 > 4 ? 4 : rebuf_need * 2) : base;
+      if (rebuf_need < base) rebuf_need = base;
       rebuf = 1; SDL_PauseAudioDevice(audio, 1);
-      fprintf(stderr, "audio ran dry: clock paused at %.2f s\n", wall_clock);
-    } else if (rebuf && (no_sound || (queued >= (s->heavy ? AUDIO_START_HEAVY : AUDIO_START) && (s->count == VQ || queued >= 2.0)))) {
+      fprintf(stderr, "audio ran dry: clock paused at %.2f s, waiting for %.1f s of sound\n", wall_clock, rebuf_need);
+    } else if (rebuf && (no_sound || (queued >= rebuf_need && (s->count == VQ || queued >= 2.0)))) {
+      rebuf_last = SDL_GetTicks();
       // (the picture ready too: its frames come out of the decoder a little after the sound, and starting
       // without them means dropping the ones that come late)
       rebuf = 0; SDL_PauseAudioDevice(audio, 0);
@@ -803,11 +819,14 @@ void tv_render(void) {
       wall_clock = clock; wall_at = nowc;
     }
     AVFrame *show = NULL;
-    // A frame more than 1.5 s from the clock means the timeline jumped (FAST channels splice in ads with
-    // #EXT-X-DISCONTINUITY and their timestamps restart): show it now and re-anchor (video_offset).
+    // Timestamp jumps are joined in the demuxer (ts_join), so the picture and the sound share one timeline: a
+    // picture behind the sound drops frames until it catches up, one ahead waits. (HLS with the audio in a playlist
+    // of its own can start them a segment apart.) Only a frame more than 10 s from the clock, a jump that wasn't
+    // joined, is shown now and the picture re-anchored (video_offset): that keeps an offset, so it's the last resort.
     while (s->count) {
       double d = s->frames[s->head]->pts / 1e6 + video_offset - clock;
-      if (d > 1.5 || d < -1.5) {
+      if (d > 10 || d < -10) {
+        fprintf(stderr, "picture %.2f s from the sound: re-anchored\n", d);
         st_jumps++; st_jumps_total++; video_offset = clock - s->frames[s->head]->pts / 1e6;
         if (show) { av_frame_free(&show); st_dropped++; }
         show = s->frames[s->head]; s->head = (s->head + 1) % VQ; s->count--;
