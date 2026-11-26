@@ -1,0 +1,73 @@
+--- a/libavformat/hls.c	2026-11-26 19:26:52.052896060 +0100
++++ b/libavformat/hls.c	2026-11-26 19:27:38.840986655 +0100
+@@ -158,6 +158,11 @@
+     HLSAudioSetupInfo audio_setup_info;
+ 
+     int64_t seek_timestamp;
++    /* Tuner: this playlist's own continuous timeline (90 kHz), for interleaving playlists. At a discontinuity
++     * (ad splices) one playlist's timestamps jump while another's haven't yet; comparing raw dts then reads only
++     * the one that went back (it seems behind) and starves the other. join_off makes them continue instead;
++     * join_next is the buffered packet's time on it. */
++    int64_t join_off, join_last, join_next;
+     int seek_flags;
+     int seek_stream_index; /* into subdemuxer stream array */
+ 
+@@ -328,6 +333,7 @@
+         return NULL;
+     }
+     pls->seek_timestamp = AV_NOPTS_VALUE;
++    pls->join_last = pls->join_next = AV_NOPTS_VALUE;   /* Tuner */
+ 
+     pls->is_id3_timestamped = -1;
+     pls->id3_mpegts_timestamp = AV_NOPTS_VALUE;
+@@ -2281,6 +2287,22 @@
+     return av_compare_mod(scaled_ts_a, scaled_ts_b, 1LL << 33);
+ }
+ 
++/* Tuner: a packet's time on its playlist's continuous timeline (a jump of more than 2 s joined). */
++static int64_t joined_ts(struct playlist *pls, int64_t dts)
++{
++    int64_t t;
++    if (dts == AV_NOPTS_VALUE)
++        return AV_NOPTS_VALUE;
++    t = av_rescale_q(dts, get_timebase(pls), MPEG_TIME_BASE_Q);
++    if (pls->join_last != AV_NOPTS_VALUE) {
++        int64_t d = t + pls->join_off - pls->join_last;
++        if (d > 2 * 90000 || d < -2 * 90000)
++            pls->join_off = pls->join_last - t;
++    }
++    pls->join_last = t + pls->join_off;
++    return pls->join_last;
++}
++
+ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+ {
+     HLSContext *c = s->priv_data;
+@@ -2324,6 +2346,7 @@
+                     ff_hls_senc_decrypt_frame(codec_id, &c->crypto_ctx, pls->pkt);
+                 }
+ 
++                pls->join_next = joined_ts(pls, pls->pkt->dts);   /* Tuner */
+                 if (pls->seek_timestamp == AV_NOPTS_VALUE)
+                     break;
+ 
+@@ -2358,8 +2381,10 @@
+                 int64_t dts     =    pls->pkt->dts;
+                 int64_t mindts  = minpls->pkt->dts;
+ 
++                /* Tuner: compared on each playlist's continuous timeline (see join_off) */
+                 if (dts == AV_NOPTS_VALUE ||
+-                    (mindts != AV_NOPTS_VALUE && compare_ts_with_wrapdetect(dts, pls, mindts, minpls) < 0))
++                    (mindts != AV_NOPTS_VALUE && pls->join_next != AV_NOPTS_VALUE && minpls->join_next != AV_NOPTS_VALUE &&
++                     pls->join_next < minpls->join_next))
+                     minplaylist = i;
+             }
+         }
+@@ -2500,6 +2525,7 @@
+         pls->cur_init_section = NULL;
+ 
+         pls->seek_timestamp = seek_timestamp;
++        pls->join_last = pls->join_next = AV_NOPTS_VALUE;   /* Tuner: a new start */
+         pls->seek_flags = flags;
+ 
+         if (pls != seek_pls) {
