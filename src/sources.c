@@ -323,6 +323,7 @@ void sources_build(const Settings *s, ChannelList *out, int force, ProgressFn cb
     }
     fclose(pf);
   }
+  if (s->mine_off) { lists[0] = guides[0] = 0; nxtream = 0; }   // Settings > Your playlists: OFF
   int k = 0, failed = 0;
   sources_warning[0] = 0;
   char *save = NULL;

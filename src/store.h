@@ -11,6 +11,7 @@ typedef struct {
   int overlay;
   int theme;
   int free_off;          // only your own playlists (no Pluto, Samsung, iptv-org, epgshare01)
+  int mine_off;          // only the free channels: playlists.txt and custom_m3u skipped (kept, just not loaded)
   int suggest_favs;      // suggest a favourite after a lot of watching (off by default)
   int mine_az;           // your channels A-Z instead of playlist order
   int plain_tuning;      // 1: no snow/picture/hiss while a channel loads, just the channel info and LOADING

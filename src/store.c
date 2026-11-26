@@ -149,6 +149,7 @@ void settings_load(Settings *s) {
     else if (!strcmp(k, "mine_az")) s->mine_az = atoi(v);
     else if (!strcmp(k, "suggest_favs")) s->suggest_favs = atoi(v);
     else if (!strcmp(k, "free_off")) s->free_off = atoi(v);
+    else if (!strcmp(k, "mine_off")) s->mine_off = atoi(v);
     else if (!strcmp(k, "pin")) snprintf(s->pin, sizeof s->pin, "%s", v);
     else if (!strcmp(k, "last_channel")) snprintf(s->last_channel, sizeof s->last_channel, "%s", v);
     else if (!strcmp(k, "setup_done")) s->setup_done = atoi(v);
@@ -161,8 +162,8 @@ void settings_load(Settings *s) {
 void settings_save(const Settings *s) {
   char p[600]; path(p, sizeof p, "settings.ini");
   FILE *f = fopen(p, "w"); if (!f) return;
-  fprintf(f, "languages=%s\ncountries=%s\ngenres=%x\nadult=%d\nmax_height=%d\noverlay=%d\ntheme=%d\nplain_tuning=%d\nhwdec=%d\nautocrop=%d\nmine_az=%d\nsuggest_favs=%d\nfree_off=%d\npin=%s\nlast_channel=%s\nsetup_done=%d\ncustom_m3u=%s\ncustom_xmltv=%s\n",
-          s->languages, s->countries, s->genres, s->adult, s->max_height, s->overlay, s->theme, s->plain_tuning, s->hwdec, s->autocrop, s->mine_az, s->suggest_favs, s->free_off, s->pin, s->last_channel, s->setup_done, s->custom_m3u, s->custom_xmltv);
+  fprintf(f, "languages=%s\ncountries=%s\ngenres=%x\nadult=%d\nmax_height=%d\noverlay=%d\ntheme=%d\nplain_tuning=%d\nhwdec=%d\nautocrop=%d\nmine_az=%d\nsuggest_favs=%d\nfree_off=%d\nmine_off=%d\npin=%s\nlast_channel=%s\nsetup_done=%d\ncustom_m3u=%s\ncustom_xmltv=%s\n",
+          s->languages, s->countries, s->genres, s->adult, s->max_height, s->overlay, s->theme, s->plain_tuning, s->hwdec, s->autocrop, s->mine_az, s->suggest_favs, s->free_off, s->mine_off, s->pin, s->last_channel, s->setup_done, s->custom_m3u, s->custom_xmltv);
   fclose(f);
 }
 

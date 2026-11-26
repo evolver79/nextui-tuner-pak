@@ -177,7 +177,7 @@ static const MenuItem INDEX_ITEMS[] = { {"Favourites", 101}, {"Most watched", 10
                                         {"Guide", 300}, {"Search", 400}, {"Settings", 900} };
 #define NINDEX 9
 static int index_of(int page) { for (int i = 0; i < NINDEX; i++) if (INDEX_ITEMS[i].page == page) return i; return 0; }
-#define NSETTINGS 17
+#define NSETTINGS 18
 static void setting_row(int i, Row *r) {
   memset(r, 0, sizeof *r);
   switch (i) {
@@ -194,10 +194,11 @@ static void setting_row(int i, Row *r) {
     case 10: snprintf(r->text, sizeof r->text, "Tuning screen"); snprintf(r->detail, sizeof r->detail, "%s", set.plain_tuning ? "Plain" : "Snow + picture"); break;
     case 11: snprintf(r->text, sizeof r->text, "My channels order"); snprintf(r->detail, sizeof r->detail, "%s", set.mine_az ? "A-Z" : "Playlist"); break;
     case 12: snprintf(r->text, sizeof r->text, "Free channels"); snprintf(r->detail, sizeof r->detail, "%s", set.free_off ? "OFF (only your playlists)" : "ON"); break;
-    case 13: snprintf(r->text, sizeof r->text, "Suggest favourites"); snprintf(r->detail, sizeof r->detail, "%s", set.suggest_favs ? "ON" : "OFF"); break;
-    case 14: snprintf(r->text, sizeof r->text, "Hardware decoding"); snprintf(r->detail, sizeof r->detail, "%s", set.hwdec ? "ON" : "OFF"); break;
-    case 15: snprintf(r->text, sizeof r->text, "Crop black borders"); snprintf(r->detail, sizeof r->detail, "%s  (L2/R2)", set.autocrop ? "AUTO" : "OFF"); break;
-    case 16: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
+    case 13: snprintf(r->text, sizeof r->text, "Your playlists"); snprintf(r->detail, sizeof r->detail, "%s", set.mine_off ? "OFF (only free channels)" : "ON"); break;
+    case 14: snprintf(r->text, sizeof r->text, "Suggest favourites"); snprintf(r->detail, sizeof r->detail, "%s", set.suggest_favs ? "ON" : "OFF"); break;
+    case 15: snprintf(r->text, sizeof r->text, "Hardware decoding"); snprintf(r->detail, sizeof r->detail, "%s", set.hwdec ? "ON" : "OFF"); break;
+    case 16: snprintf(r->text, sizeof r->text, "Crop black borders"); snprintf(r->detail, sizeof r->detail, "%s  (L2/R2)", set.autocrop ? "AUTO" : "OFF"); break;
+    case 17: snprintf(r->text, sizeof r->text, "Run first-time setup again"); break;
   }
 }
 
@@ -479,7 +480,7 @@ static void on_button(int b) {
       break;
     case SCR_SETTINGS:
       if (step) { cursor = (cursor + step + NSETTINGS) % NSETTINGS; keep_visible(NSETTINGS); }
-      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 5 || cursor == 10 || cursor == 11 || cursor == 12 || cursor == 13 || cursor == 14 || cursor == 15))) {
+      if (b == BTN_A || ((b == BTN_LEFT || b == BTN_RIGHT) && (cursor == 5 || cursor == 10 || cursor == 11 || cursor == 12 || cursor == 13 || cursor == 14 || cursor == 15 || cursor == 16))) {
         int dir = b == BTN_LEFT ? -1 : 1;
         if (cursor <= 2) { edit_kind = (EditKind)cursor; screen = SCR_EDIT; cursor = top = 0; }
         else if (cursor == 3) { set.adult = !set.adult; dirty_sources = 1; settings_save(&set); }
@@ -495,11 +496,18 @@ static void on_button(int b) {
         else if (cursor == 9) ask_pin(1, SCR_SETTINGS);
         else if (cursor == 10) { set.plain_tuning = !set.plain_tuning; settings_save(&set); }
         else if (cursor == 11) { set.mine_az = !set.mine_az; settings_save(&set); }
-        else if (cursor == 12) { set.free_off = !set.free_off; settings_save(&set); dirty_sources = 1; }
-        else if (cursor == 13) { set.suggest_favs = !set.suggest_favs; settings_save(&set); }
-        else if (cursor == 14) { set.hwdec = !set.hwdec; tv_hwdec(set.hwdec); settings_save(&set); say(set.hwdec ? "Hardware decoding on" : "Hardware decoding off"); }
-        else if (cursor == 15) toggle_crop();
-        else if (cursor == 16) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
+        else if (cursor == 12) {   // never both off: that would be no channels at all
+          set.free_off = !set.free_off; if (set.free_off && set.mine_off) { set.mine_off = 0; say("Your playlists back on"); }
+          settings_save(&set); dirty_sources = 1;
+        }
+        else if (cursor == 13) {
+          set.mine_off = !set.mine_off; if (set.mine_off && set.free_off) { set.free_off = 0; say("Free channels back on"); }
+          settings_save(&set); dirty_sources = 1;
+        }
+        else if (cursor == 14) { set.suggest_favs = !set.suggest_favs; settings_save(&set); }
+        else if (cursor == 15) { set.hwdec = !set.hwdec; tv_hwdec(set.hwdec); settings_save(&set); say(set.hwdec ? "Hardware decoding on" : "Hardware decoding off"); }
+        else if (cursor == 16) toggle_crop();
+        else if (cursor == 17) { screen = SCR_SETUP; setup_step = 0; edit_kind = EDIT_LANG; cursor = top = 0; }
       }
       if (b == BTN_X && cursor == 9 && set.pin[0]) { set.pin[0] = 0; settings_save(&set); say("PIN removed"); }
       if (b == BTN_B) { screen = SCR_INDEX; cursor = index_of(900); top = 0; if (dirty_sources) { dirty_sources = 0; start_loading(0); } }
@@ -508,7 +516,7 @@ static void on_button(int b) {
       if (setup_step == 0) {
         if (step) cursor = (cursor + step + 2) % 2;
         if (b == BTN_A) {
-          set.free_off = cursor == 1;
+          set.free_off = cursor == 1; set.mine_off = 0;   // setup brings your playlists back either way
           if (set.free_off) { set.setup_done = 1; settings_save(&set); start_loading(0); }   // only your playlists: done
           else { setup_step = 1; edit_kind = EDIT_LANG; cursor = top = 0; }
         }
