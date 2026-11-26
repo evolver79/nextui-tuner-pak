@@ -141,7 +141,8 @@ static void list_draw(const Page *p, int n, int rows, int peek, RowFn fn) {
 
 static const Channel *row_on;   // the channel playing (its row gets the live dot)
 static void list_row(const Page *p, int i, int y, int sel) {
-  const Row *r = &p->rows[i];
+  if (p->nfill && (i < p->row0 || i >= p->row0 + p->nfill)) return;   // not filled (out of the window round the view)
+  const Row *r = &p->rows[i - p->row0];
   char num[12]; snprintf(num, sizeof num, "%d", r->number);
   int live = row_on && i < p->nchs && p->chs[i] == row_on;
   dot_row(D, 40, y, CW, DOT_I_TV, r->text, r->detail[0] ? r->detail : NULL, num, (sel ? DOT_FOCUS : 0) | (r->fav ? DOT_STAR : 0), live);
@@ -174,7 +175,7 @@ static void guide_rows(const Page *p) {
 }
 
 static void menu_row(const Page *p, int i, int y, int sel) {
-  const Row *r = &p->rows[i];
+  const Row *r = &p->rows[i - p->row0];
   if (p->kind == PAGE_CHECK) {
     dot_row(D, 40, y, CW, 0, r->text, r->detail[0] ? r->detail : NULL, NULL, sel ? DOT_FOCUS : 0, 0);
     dot_toggle(D, RIGHT - 24 - DOT_TOGGLE_W, y + (DOT_ROW_H - DOT_TOGGLE_H) / 2, r->checked, sel);

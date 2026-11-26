@@ -273,13 +273,16 @@ static void fill_page(void) {
       else if (list_kind == LIST_MINE && !mine_group_all) snprintf(p->title, sizeof p->title, "%s", mine_group[0] ? mine_group : "(no group)");
       else snprintf(p->title, sizeof p->title, "%s", list_kind == LIST_GENRE ? GENRE_NAMES[list_genre] : names[list_kind]);
       p->chs = view; p->nchs = nview;
-      for (int i = 0; i < nview && i < 4096; i++) {
-        Row *r = &p->rows[p->nrows++]; memset(r, 0, sizeof *r);
+      // only the rows that can show: a few screens round the view (the list slides through them), not all of a long list
+      int L = theme()->list_rows, w0 = cursor - 3 * L < 0 ? 0 : cursor - 3 * L, w1 = cursor + 3 * L + 2 < nview ? cursor + 3 * L + 2 : nview;
+      p->row0 = w0; p->nfill = w1 > w0 ? w1 - w0 : 0; p->nrows = nview;
+      for (int i = w0; i < w1; i++) {
+        Row *r = &p->rows[i - w0]; memset(r, 0, sizeof *r);
         r->number = i + 1; snprintf(r->text, sizeof r->text, "%s", view[i]->name); r->fav = is_fav(view[i]->key);
         const Programme *cur, *next; now_next(view[i], now, &cur, &next);
         if (cur) snprintf(r->detail, sizeof r->detail, "%s", cur->title);
         if (list_kind == LIST_MOST) { int m = (int)(watch_score(view[i]->key) / 60); snprintf(r->detail, sizeof r->detail, "%dh %02dm", m / 60, m % 60); }
-        if (screen == SCR_LIST && i >= top - theme()->list_rows && i <= top + 2 * theme()->list_rows) r->logo = logo_get(view[i]->logo);
+        if (screen == SCR_LIST && i >= cursor - 2 * L && i <= cursor + 2 * L) r->logo = logo_get(view[i]->logo);
       }
       if (!nview) snprintf(p->help, sizeof p->help, "%s", list_kind == LIST_FAVS ? "No favourites yet: press Y on a channel." :
                            list_kind == LIST_MOST || list_kind == LIST_RECENT ? "Channels you watch show up here by themselves." :

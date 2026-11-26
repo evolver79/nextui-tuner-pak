@@ -16,6 +16,7 @@ typedef struct {
 
 typedef struct {
   PageKind kind;
+  int row0, nfill;          // rows[k] is row row0 + k, nfill of them (a long channel list fills only those near the view)
   int page_no;              // teletext page number
   char title[64];
   char help[96];            // a line under the title
