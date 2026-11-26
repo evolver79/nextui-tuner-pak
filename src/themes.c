@@ -1,6 +1,7 @@
 // Tuner's look: Dot (ui/dot), shared with Kino and Musicdisk. Menus and lists are glass cards on Tuner's evening
 // ground (TUNER_THEME), or over the live channel (the picture under a 70% scrim, Dot's Night scheme). The accent is the
 // one colour: the channel that is on. The TV engine's own screens (no signal, searching, retrying) and the stats are drawn here too.
+#include <math.h>
 #include "ui.h"
 #include "tv.h"
 #include "store.h"
@@ -33,7 +34,7 @@ int themes_init(SDL_Renderer *r, const char *pak_dir) {
   T_DOT.list_rows = ROWS;
   return 0;
 }
-void themes_still(int on) { still = on; }
+void themes_still(int on) { still = on; dot_set_still(D, on); }
 void ui_frame(void) { dot_frame(D); }
 
 static void clock_str(char *b, size_t n, const char *fmt) { time_t t = time(NULL); strftime(b, n, fmt, localtime(&t)); }
@@ -121,56 +122,63 @@ static void logo_in_well(SDL_Texture *t, int y, int sel) {
   SDL_RenderCopy(ren, t, NULL, &d);
 }
 
-static void list_rows(const Page *p) {
-  int top = view_top(p, ROWS);
-  const Channel *on = tv_state() != TV_OFF ? tv_channel() : NULL;
-  for (int i = top; i < p->nrows && i < top + ROWS; i++) {
-    const Row *r = &p->rows[i];
-    int y = 96 + (i - top) * PITCH, sel = i == p->cursor;
-    char num[12]; snprintf(num, sizeof num, "%d", r->number);
-    int live = on && i < p->nchs && p->chs[i] == on;
-    dot_row(D, 40, y, CW, DOT_I_TV, r->text, r->detail[0] ? r->detail : NULL, num,
-            (sel ? DOT_FOCUS : 0) | (r->fav ? DOT_STAR : 0), live);
-    if (r->logo) logo_in_well(r->logo, y, sel);
-  }
+// Lists move the Dot way (dot_list): the rows slide, the highlight slides, the next row peeks out under the last.
+typedef void (*RowFn)(const Page *p, int i, int y, int sel);
+static RowFn row_fn;
+static void row_cb(void *ud, int i, int y, int sel) { row_fn((const Page *)ud, i, y, sel); }
+static void list_draw(const Page *p, int n, int rows, int peek, RowFn fn) {
+  static DotList dl;
+  unsigned key = (unsigned)p->kind * 31u + (unsigned)n;   // which list: its kind, title and length
+  for (const char *c = p->title; *c; c++) key = key * 33u + (unsigned char)*c;
+  row_fn = fn;
+  dot_list(D, &dl, (int)key, n, rows, view_top(p, rows), p->cursor, 40, CW, peek, row_cb, (void *)p);
 }
 
+static const Channel *row_on;   // the channel playing (its row gets the live dot)
+static void list_row(const Page *p, int i, int y, int sel) {
+  const Row *r = &p->rows[i];
+  char num[12]; snprintf(num, sizeof num, "%d", r->number);
+  int live = row_on && i < p->nchs && p->chs[i] == row_on;
+  dot_row(D, 40, y, CW, DOT_I_TV, r->text, r->detail[0] ? r->detail : NULL, num, (sel ? DOT_FOCUS : 0) | (r->fav ? DOT_STAR : 0), live);
+  if (r->logo) logo_in_well(r->logo, y, sel);
+}
+static void list_rows(const Page *p) {
+  row_on = tv_state() != TV_OFF ? tv_channel() : NULL;
+  list_draw(p, p->nrows, ROWS, 1, list_row);
+}
+
+static void guide_row(const Page *p, int i, int y, int sel) {
+  Channel *c = p->chs[i];
+  const Programme *cur, *next; now_next(c, time(NULL), &cur, &next);
+  char sub[220] = "No guide", num[12], t1[8], t2[8];
+  if (cur) { hhmm(t1, sizeof t1, cur->start); hhmm(t2, sizeof t2, cur->stop); snprintf(sub, sizeof sub, "%s–%s  %s", t1, t2, cur->title); }
+  snprintf(num, sizeof num, "%d", i + 1);
+  dot_row(D, 40, y, CW, 0, c->name, sub, num, (sel ? DOT_FOCUS : 0) | (is_fav(c->key) ? DOT_STAR : 0), row_on == c);
+}
 // The guide: when the selected channel has a next programme, it shows in a pill in the fifth row's place (4 rows).
 static void guide_rows(const Page *p) {
-  time_t now = time(NULL);
   char l[200] = "";
   if (p->cursor >= 0 && p->cursor < p->nchs) {
-    const Programme *cur, *next; now_next(p->chs[p->cursor], now, &cur, &next);
+    const Programme *cur, *next; now_next(p->chs[p->cursor], time(NULL), &cur, &next);
     if (next) { char t[8], s[200]; hhmm(t, sizeof t, next->start); snprintf(s, sizeof s, "Next %s · %.150s", t, next->title); fit(l, sizeof l, DOT_UI, s, CW - 48); }
   }
-  int rows = l[0] ? ROWS - 1 : ROWS, top = view_top(p, rows);
-  const Channel *on = tv_state() != TV_OFF ? tv_channel() : NULL;
-  for (int i = top; i < p->nchs && i < top + rows; i++) {
-    Channel *c = p->chs[i];
-    const Programme *cur, *next; now_next(c, now, &cur, &next);
-    char sub[220] = "No guide", num[12], t1[8], t2[8];
-    if (cur) { hhmm(t1, sizeof t1, cur->start); hhmm(t2, sizeof t2, cur->stop); snprintf(sub, sizeof sub, "%s–%s  %s", t1, t2, cur->title); }
-    snprintf(num, sizeof num, "%d", i + 1);
-    dot_row(D, 40, 96 + (i - top) * PITCH, CW, 0, c->name, sub, num,
-            (i == p->cursor ? DOT_FOCUS : 0) | (is_fav(c->key) ? DOT_STAR : 0), on == c);
-  }
+  int rows = l[0] ? ROWS - 1 : ROWS;
+  row_on = tv_state() != TV_OFF ? tv_channel() : NULL;
+  list_draw(p, p->nchs, rows, !l[0], guide_row);
   if (l[0]) dot_pill(D, 40, 96 + rows * PITCH + (DOT_ROW_H - DOT_PILL_H) / 2, l, 0, 0, DOT_LEFT);
 }
 
-static void menu_rows(const Page *p, int rows) {
-  int top = view_top(p, rows);
-  for (int i = top; i < p->nrows && i < top + rows; i++) {
-    const Row *r = &p->rows[i];
-    int y = 96 + (i - top) * PITCH, sel = i == p->cursor;
-    if (p->kind == PAGE_CHECK) {
-      dot_row(D, 40, y, CW, 0, r->text, r->detail[0] ? r->detail : NULL, NULL, sel ? DOT_FOCUS : 0, 0);
-      dot_toggle(D, RIGHT - 24 - DOT_TOGGLE_W, y + (DOT_ROW_H - DOT_TOGGLE_H) / 2, r->checked, sel);
-    } else {   // short values at the right; longer ones as a second line
-      int shortv = r->detail[0] && strlen(r->detail) <= 12;
-      dot_row(D, 40, y, CW, 0, r->text, r->detail[0] && !shortv ? r->detail : NULL, shortv ? r->detail : NULL, sel ? DOT_FOCUS : 0, 0);
-    }
+static void menu_row(const Page *p, int i, int y, int sel) {
+  const Row *r = &p->rows[i];
+  if (p->kind == PAGE_CHECK) {
+    dot_row(D, 40, y, CW, 0, r->text, r->detail[0] ? r->detail : NULL, NULL, sel ? DOT_FOCUS : 0, 0);
+    dot_toggle(D, RIGHT - 24 - DOT_TOGGLE_W, y + (DOT_ROW_H - DOT_TOGGLE_H) / 2, r->checked, sel);
+  } else {   // short values at the right; longer ones as a second line
+    int shortv = r->detail[0] && strlen(r->detail) <= 12;
+    dot_row(D, 40, y, CW, 0, r->text, r->detail[0] && !shortv ? r->detail : NULL, shortv ? r->detail : NULL, sel ? DOT_FOCUS : 0, 0);
   }
 }
+static void menu_rows(const Page *p, int rows) { list_draw(p, p->nrows, rows, rows == ROWS, menu_row); }   // (no peek under a help pill)
 
 static void pin_page(const Page *p) {
   dot_header(D, p->title, NULL);
@@ -216,20 +224,29 @@ static void keys_page(const Page *p) {
   dock_from(h);
 }
 
+// The card comes in and goes the Dot way (dot_rise); app.c holds the page for LEAVE_MS while it goes.
 static void loading_page(const Page *p) {
   dot_title(D, "TUNER");
   char t[16]; clock_str(t, sizeof t, "%H:%M"); dot_header(D, NULL, t);
+  static Uint32 came, seen;   // when the page came up; when it was last drawn (away for a moment: comes in again)
+  Uint32 now = SDL_GetTicks();
+  if (!seen || now - seen > 250) came = now;
+  seen = now;
+  int rise = dot_rise(D, (now - came) / (float)DOT_IN_MS, p->leave);
   // 30 px inside the card: the state (dot and label), the message over up to two lines, then the dots
   const char *msg = p->status[0] ? p->status : "Finding channels";
+  // The card sits in the middle of the screen (no dock here), at least under the header.
   int lh = dot_line_h(D, DOT_BODY_S), lines = wrap(0, DOT_BODY_S, msg, 70, 176, DOT_LABEL, IN, 2);
-  int dy = 176 + lines * lh + 24;
-  dot_card(D, 40, 96, CW, dy + DOT_DOT_R + 30 - 96);
-  text_wrap(DOT_BODY_S, msg, 70, 176, DOT_LABEL, IN, 2);
-  dot_adot(D, 70, 126 + (dot_line_h(D, DOT_LABEL_T) - 14) / 2, dot_accent(D));
-  dot_text(D, DOT_LABEL_T, p->title, 98, 126, DOT_TEXT, DOT_LEFT, 0);
+  int ch = 80 + lines * lh + 24 + DOT_DOT_R + 30, y0 = ((H - ch) / 2 < 96 ? 96 : (H - ch) / 2) + rise;
+  int dy = y0 + 80 + lines * lh + 24;
+  dot_card(D, 40, y0, CW, ch);
+  text_wrap(DOT_BODY_S, msg, 70, y0 + 80, DOT_LABEL, IN, 2);
+  dot_adot(D, 70, y0 + 30 + (dot_line_h(D, DOT_LABEL_T) - 14) / 2, dot_accent(D));
+  dot_text(D, DOT_LABEL_T, p->title, 98, y0 + 30, DOT_TEXT, DOT_LEFT, 0);
   int nd = (IN - 2 * DOT_DOT_R) / 18 + 1;   // dots across the card (49 on the Brick), filling up while it works
   int lit = still ? 6 : (int)(SDL_GetTicks() / 120 % (nd + 1));
   for (int i = 0; i < nd; i++) dot_circle(D, 70 + DOT_DOT_R + i * 18, dy, DOT_DOT_R, i < lit ? DOT_TEXT : DOT_TRACK);
+  dot_set_alpha(D, 1);
 }
 
 static void dot_page(const Page *p) {
@@ -264,49 +281,64 @@ static void dot_page(const Page *p) {
 
 // Over the picture: the channel in a pill top left, its number and the time top right, and a card at the bottom
 // with what's on now (how far it has got) and what's next.
-static void dot_banner(const Channel *c, int number) {
-  dot_set_accent(D, ACCENT);
+static int banner_h(const Channel *c) {
+  const Programme *cur, *next; now_next(c, time(NULL), &cur, &next);
+  int lab = dot_line_h(D, DOT_LABEL_T), tit = dot_line_h(D, DOT_TITLE), bod = dot_line_h(D, DOT_BODY_S);
+  return cur ? 34 + lab + 12 + tit + 16 + 24 + 16 + bod + 40 : 34 + tit + 10 + bod + 40;
+}
+// Top right: the channel's number and the time (its name is in the band).
+static void banner_pills(const Channel *c, int number) {
+  (void)c;
   char t[16], b[48]; clock_str(t, sizeof t, "%H:%M");
   snprintf(b, sizeof b, "CH %d · %s", number, t);
-  int bw = dot_text_w(D, DOT_PILL_MONO, b) + 48;
-  char nm[110]; snprintf(nm, sizeof nm, "%s", c->name);
-  size_t len = strlen(nm);   // shortened with "…" to leave room for the right pill
-  while (len > 1 && dot_text_w(D, DOT_UI, nm) + 76 > CW - bw - 24) {
-    do len--; while (len > 1 && ((unsigned char)c->name[len] & 0xc0) == 0x80);
-    snprintf(nm, sizeof nm, "%.*s…", (int)len, c->name);
-  }
-  dot_pill(D, 40, 36, nm, 1, 0, DOT_LEFT);
   dot_pill(D, RIGHT, 36, b, 0, 1, DOT_RIGHT);
+}
+// Inside the band (top y), 30 px inside the content's margin: Now and the times, the title, the progress, what's next.
+static void banner_info(const Channel *c, int y) {
   time_t now = time(NULL);
   const Programme *cur, *next; now_next(c, now, &cur, &next);
-  // The card sits 40 px off the bottom (no dock while watching); 30 px inside it: Now and the times, the title, the
-  // progress, then what's next.
-  int lab = dot_line_h(D, DOT_LABEL_T), tit = dot_line_h(D, DOT_TITLE), bod = dot_line_h(D, DOT_BODY_S);
+  int lab = dot_line_h(D, DOT_LABEL_T), tit = dot_line_h(D, DOT_TITLE);
   if (!cur) {
-    int h = 30 + tit + 10 + bod + 26, y = H - 40 - h;
-    dot_card(D, 40, y, CW, h);
-    dot_text(D, DOT_TITLE, c->name, 70, y + 30, DOT_TEXT, DOT_LEFT, IN);
-    dot_text(D, DOT_BODY_S, "No guide for this channel", 70, y + 30 + tit + 10, DOT_LABEL, DOT_LEFT, IN);
-  } else {
-    int h = 30 + lab + 12 + tit + 16 + 24 + 16 + bod + 26, y = H - 40 - h;
-    dot_card(D, 40, y, CW, h);
-    char t1[8], t2[8], l[220];
-    hhmm(t1, sizeof t1, cur->start); hhmm(t2, sizeof t2, cur->stop);
-    int ly = y + 30;
-    dot_adot(D, 70, ly + (lab - 14) / 2, dot_accent(D));
-    snprintf(l, sizeof l, "Now · %s–%s", t1, t2);
-    dot_text(D, DOT_LABEL_T, l, 98, ly, DOT_TEXT, DOT_LEFT, 0);
-    int fav = is_fav(c->key);
-    if (fav) dot_icon(D, DOT_I_STAR, RIGHT - 30 - 13, ly + lab / 2, 26, DOT_TEXT);
-    int ty = ly + lab + 12;
-    dot_text(D, DOT_TITLE, cur->title, 70, ty, DOT_TEXT, DOT_LEFT, IN);
-    long len2 = (long)(cur->stop - cur->start); if (len2 < 1) len2 = 1;
-    int py = ty + tit + 16;
-    dot_progress(D, 70, py, IN, (float)(now - cur->start) / len2, 0);
-    if (next) { hhmm(t1, sizeof t1, next->start); snprintf(l, sizeof l, "Next %s · %s", t1, next->title); }
-    else l[0] = 0;
-    dot_text(D, DOT_BODY_S, l, 70, py + 24 + 16, DOT_LABEL, DOT_LEFT, IN);
+    dot_text(D, DOT_TITLE, c->name, 70, y + 34, DOT_TEXT, DOT_LEFT, IN);
+    dot_text(D, DOT_BODY_S, "No guide for this channel", 70, y + 34 + tit + 10, DOT_LABEL, DOT_LEFT, IN);
+    return;
   }
+  char t1[8], t2[8], l[220];
+  hhmm(t1, sizeof t1, cur->start); hhmm(t2, sizeof t2, cur->stop);
+  int ly = y + 34;
+  dot_adot(D, 70, ly + (lab - 14) / 2, dot_accent(D));
+  // the channel, then Now and the times (the name shortened if they don't fit, the times never)
+  char tm[32]; snprintf(tm, sizeof tm, " · Now · %s–%s", t1, t2);
+  int room = RIGHT - 30 - 26 - 16 - 98 - dot_text_w(D, DOT_LABEL_T, tm);
+  fit(l, sizeof l, DOT_LABEL_T, c->name, room);
+  strncat(l, tm, sizeof l - strlen(l) - 1);
+  dot_text(D, DOT_LABEL_T, l, 98, ly, DOT_TEXT, DOT_LEFT, 0);
+  if (is_fav(c->key)) dot_icon(D, DOT_I_STAR, RIGHT - 30 - 13, ly + lab / 2, 26, DOT_TEXT);
+  int ty = ly + lab + 12;
+  dot_text(D, DOT_TITLE, cur->title, 70, ty, DOT_TEXT, DOT_LEFT, IN);
+  long len = (long)(cur->stop - cur->start); if (len < 1) len = 1;
+  int py = ty + tit + 16;
+  dot_progress(D, 70, py, IN, (float)(now - cur->start) / len, 0);
+  if (next) { hhmm(t1, sizeof t1, next->start); snprintf(l, sizeof l, "Next %s · %s", t1, next->title); }
+  else l[0] = 0;
+  dot_text(D, DOT_BODY_S, l, 70, py + 24 + 16, DOT_LABEL, DOT_LEFT, IN);
+}
+static void dot_banner(const Channel *c, int number, int up) {
+  static DotSlide sl; static DotSwap sw; static const Channel *was; static int was_n, now_n; static float hb;
+  float e = dot_slide(D, &sl, up);
+  if (e <= 0) { was = c; was_n = now_n = number; hb = 0; dot_swap(D, &sw, c, 0, &e); return; }
+  if (c != was) { if (now_n != number) was_n = now_n; was = c; }   // the number that goes with the old one
+  now_n = number;
+  float fa; const Channel *show = dot_swap(D, &sw, c, 1, &fa);
+  int show_n = show == c ? number : was_n;
+  dot_set_accent(D, ACCENT);
+  int th = banner_h(show);
+  hb = hb <= 0 || still ? th : hb + (th - hb) * 0.25f;   // the band eases to the height of what's in it
+  int h = (int)lroundf(hb), y = H - h + (int)lroundf((1 - e) * h);
+  dot_set_alpha(D, e * fa); banner_pills(show, show_n);   // the pills fade
+  dot_set_alpha(D, 1); dot_band(D, y, h);                  // the band slides
+  dot_set_alpha(D, fa); banner_info(show, y);
+  dot_set_alpha(D, 1);
 }
 
 static void dot_toast_(const char *m, int line) {
@@ -354,17 +386,21 @@ void ui_no_signal(const char *name, const char *reason) {
 void ui_notice(const char *msg) { dot_frame(D); dot_pill(D, W / 2, 36, msg, 1, 0, DOT_CENTER); }
 
 // Stats for nerds (SELECT while watching): "LABEL|value" lines in a card.
-void ui_nerd(char lines[][96], int n) {
-  // 28 px type on a 40 px pitch, 30 px inside the card; labels (7 letters at most) in a 160 px column
-  int lh = 40, th = dot_line_h(D, DOT_VALUE), h = 30 + (n - 1) * lh + th + 30, vx = 70 + 160;
-  dot_rect(D, 40, 36, CW, h, DOT_R_CARD, DOT_CARD, 225);
-  for (int i = 0; i < n; i++) {
-    char l[96]; snprintf(l, sizeof l, "%s", lines[i]);
-    char *bar = strchr(l, '|'); if (bar) *bar++ = 0;
-    int y = 36 + 30 + i * lh;
-    dot_text(D, DOT_LABEL_T, l, 70, y, DOT_LABEL, DOT_LEFT, vx - 70 - 12);
-    if (bar) dot_text(D, DOT_VALUE, bar, vx, y, DOT_TEXT, DOT_LEFT, RIGHT - 30 - vx);
-  }
+// The audio track picked: a Dot notice in the middle ("AUDIO 2/3: English" -> AUDIO 2 OF 3 over English).
+int ui_audio(const char *label, Uint32 since) {
+  int cur = 0, n = 0; char head[32] = "AUDIO", name[64];
+  const char *colon = strstr(label, ": ");
+  if (colon && sscanf(label, "AUDIO %d/%d", &cur, &n) == 2) { snprintf(head, sizeof head, "AUDIO %d OF %d", cur, n); snprintf(name, sizeof name, "%s", colon + 2); }
+  else snprintf(name, sizeof name, "%s", !strcmp(label, "ONE AUDIO TRACK") ? "Only one audio track" : !strcmp(label, "NO AUDIO") ? "No audio" : label);
+  return dot_notice(D, DOT_I_NOTE, head, name, cur, n, since);
+}
+
+void ui_nerd(char lines[][96], int n) { dot_stats(D, lines, n); }
+// Tuning in, buffering, reconnecting, no Wi-Fi: a Dot busy card in the middle (drawn every frame; show: fades).
+void ui_busy(int show, const char *label, const char *value, int spin) {
+  static DotSlide s; static char l[48], v[110];
+  if (show) { snprintf(l, sizeof l, "%s", label); snprintf(v, sizeof v, "%s", value); }   // what fades out is what was up
+  dot_busy(D, &s, show, DOT_I_TV, l, v, spin);
 }
 
 static Theme T_DOT = { "Dot", 5, 1, dot_page, dot_banner, dot_toast_, dot_volume };   // list_rows: ROWS, set by themes_init

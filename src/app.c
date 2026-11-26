@@ -45,6 +45,7 @@ static int dirty_sources, running = 1;
 static Uint32 banner_until, toast_until, last_move;
 static char toast[64];
 static int show_osd;
+static char audio_label[64]; static Uint32 audio_at;   // LEFT/RIGHT while watching: the track picked, shown mid-screen
 static int prev_index = -1;                        // X while watching: back to the channel before
 static char resume_key[64]; static ListKind resume_kind; static int resume_genre;   // START in the menus: back to this channel, in this list
 static Uint32 sleep_at; static int sleep_min, sleep_warned;
@@ -218,6 +219,8 @@ static void edit_toggle(int i) {
 }
 
 // --- building the Page for the theme -------------------------------------------------------------------------------
+#define LEAVE_MS 250
+static Uint32 leave_at;   // loading done: when the card started going out
 static Row rows_buf[4096];
 static Page page;
 static void fill_page(void) {
@@ -263,7 +266,7 @@ static void fill_page(void) {
         const Programme *cur, *next; now_next(view[i], now, &cur, &next);
         if (cur) snprintf(r->detail, sizeof r->detail, "%s", cur->title);
         if (list_kind == LIST_MOST) { int m = (int)(watch_score(view[i]->key) / 60); snprintf(r->detail, sizeof r->detail, "%dh %02dm", m / 60, m % 60); }
-        if (screen == SCR_LIST && i >= top && i < top + theme()->list_rows) r->logo = logo_get(view[i]->logo);
+        if (screen == SCR_LIST && i >= top - theme()->list_rows && i <= top + 2 * theme()->list_rows) r->logo = logo_get(view[i]->logo);
       }
       if (!nview) snprintf(p->help, sizeof p->help, "%s", list_kind == LIST_FAVS ? "No favourites yet: press Y on a channel." :
                            list_kind == LIST_MOST || list_kind == LIST_RECENT ? "Channels you watch show up here by themselves." :
@@ -309,6 +312,7 @@ static void fill_page(void) {
     }
     case SCR_LOADING:
       p->kind = PAGE_LOADING; p->page_no = 199;
+      if (leave_at) p->leave = (SDL_GetTicks() - leave_at) / (float)LEAVE_MS;
       if (load_waiting >= 0) {
         snprintf(p->title, sizeof p->title, "No Wi-Fi");
         snprintf(p->status, sizeof p->status, "Tuner needs Wi-Fi. Turn it on in the device settings: Tuner goes on by itself.");
@@ -426,7 +430,7 @@ static void on_button(int b) {
       if (b == BTN_L1 || b == BTN_R1) { tv_overlay_step(b == BTN_R1 ? 1 : -1); say(tv_overlay_name()); }
       if (b == BTN_L2 || b == BTN_R2) toggle_crop();
       if (b == BTN_SELECT) show_osd = !show_osd;
-      if (b == BTN_LEFT || b == BTN_RIGHT) { char l[64]; tv_audio_step(b == BTN_RIGHT ? 1 : -1, l, sizeof l); say(l); }
+      if (b == BTN_LEFT || b == BTN_RIGHT) { tv_audio_step(b == BTN_RIGHT ? 1 : -1, audio_label, sizeof audio_label); audio_at = SDL_GetTicks(); }
       if (b == BTN_X && prev_index >= 0 && prev_index < nview) tune_view(prev_index);   // last channel
       if (b == BTN_B) leave_watch();
       break;
@@ -634,19 +638,19 @@ static void shots(const char *dir) {
       for (int frame = 0; frame < (screen == SCR_LIST ? 90 : 40); frame++) {   // lists: logos; all: a page's arrival
         logos_pump();
         ui_frame(); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
-        if (screen == SCR_WATCH) { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3); }
+        if (screen == SCR_WATCH) { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3, 1); }
         else { fill_page(); theme()->page(&page); }
         SDL_RenderPresent(ren); SDL_Delay(30);
       }
       // draw once more to an unpresented frame and save it
       ui_frame(); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
-      if (screen == SCR_WATCH) { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3); } else { fill_page(); theme()->page(&page); }
+      if (screen == SCR_WATCH) { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3, 1); } else { fill_page(); theme()->page(&page); }
       save_shot(dir, nm[k]); (void)t;
       SDL_RenderPresent(ren);
     }
   }
   // The screens the loop above can't reach: loading, waiting for Wi-Fi, NO SIGNAL and stats for nerds.
-  for (int k = 0; k < 4; k++) {
+  for (int k = 0; k < 6; k++) {
     ui_frame(); SDL_SetRenderDrawColor(ren, 0, 0, 0, 255); SDL_RenderClear(ren);
     if (k < 2) {
       screen = SCR_LOADING; load_waiting = k ? 0 : -1;
@@ -658,9 +662,11 @@ static void shots(const char *dir) {
         "FRAMES|decoded 25.0/s  shown 25.0/s  dropped 0", "SYNC|A/V +12 ms  jumps 0  render 60/s",
         "QUEUES|frames 4/8  packets 31  audio 180 ms", "AUDIO|aac 48000 Hz 2 ch  track 1 of 2", "TRACKS|1 Norwegian  2 English",
         "STREAM|2.4 Mbps now  variant 3 of 4 (2.5 Mbps)", "HEALTH|retries 0  damaged frames 0", "DEVICE|CPU 38%  51 C  Wi-Fi -54 dBm, 72 Mbit/s" };
-      draw_testcard(); ui_nerd(l, 11);
+      if (k == 3) { draw_testcard(); ui_nerd(l, 11); }
+      else if (k == 4) { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3, 1); ui_audio("AUDIO 2/3: English", SDL_GetTicks()); }
+      else { draw_testcard(); if (nview) theme()->banner(view[2 < nview ? 2 : 0], 3, 1); ui_busy(1, "TUNING IN", nview ? view[2 < nview ? 2 : 0]->name : "NRK1", 1); }
     }
-    static const char *xn[] = { "loading", "nowifi", "nosignal", "nerd" };
+    static const char *xn[] = { "loading", "nowifi", "nosignal", "nerd", "audio", "busy" };
     save_shot(dir, xn[k]); SDL_RenderPresent(ren);
   }
 }
@@ -738,7 +744,10 @@ int main(int argc, char **argv) {
       }
     }
     if (held >= 0 && SDL_GetTicks() >= repeat_at && screen != SCR_WATCH) { on_button(held); repeat_at = SDL_GetTicks() + 70; }
-    if (screen == SCR_LOADING && load_done) {
+    // Loaded: the card goes out (fading, upwards) for LEAVE_MS first, then the menu.
+    if (screen == SCR_LOADING && load_done && !shots_dir && !leave_at) leave_at = SDL_GetTicks();
+    if (screen == SCR_LOADING && load_done && (shots_dir || SDL_GetTicks() - leave_at >= LEAVE_MS)) {
+      leave_at = 0;
       channel_list_free(&chans); chans = loaded; memset(&loaded, 0, sizeof loaded);
       load_done = 0; screen = SCR_INDEX; cursor = top = 0;
       fprintf(stderr, "%d channels loaded\n", chans.n);
@@ -775,26 +784,30 @@ int main(int argc, char **argv) {
     last_frame = now_f;
     if (screen == SCR_WATCH) {
       int plain_loading = set.plain_tuning && tv_state() == TV_TUNING;
-      if ((plain_loading || SDL_GetTicks() < banner_until) && nview) theme()->banner(view[watch_index], watch_index + 1);
+      // stats for nerds (SELECT) is shown alone: the info goes down, the messages wait
+      if (nview) theme()->banner(view[watch_index], watch_index + 1, !show_osd && (plain_loading || SDL_GetTicks() < banner_until));
       // plain tuning screen: the channel info stays up with LOADING (or RECONNECTING), in the theme's style; and
       // BUFFERING over a frozen picture when the stream runs dry while playing
-      if (!wifi_up()) theme()->toast("No Wi-Fi: turn it on to keep watching", 1);
-      else if (plain_loading || tv_buffering()) {
-        static const char *dots[] = { "", ".", "..", "..." };
-        char m[48]; int r = tv_retries();
-        if (!plain_loading) snprintf(m, sizeof m, "Buffering%s", dots[(SDL_GetTicks() / 400) % 4]);
-        else if (r) snprintf(m, sizeof m, "Reconnecting (%d/3)%s", r, dots[(SDL_GetTicks() / 400) % 4]);
-        else snprintf(m, sizeof m, "Loading%s", dots[(SDL_GetTicks() / 400) % 4]);
-        theme()->toast(m, 1);
+      {   // waiting: a card in the middle with a ring of dots running round (none without Wi-Fi: nothing to wait for)
+        int r = tv_retries(), nowifi = !wifi_up();
+        char l[48];
+        if (nowifi) snprintf(l, sizeof l, "NO WI-FI");
+        else if (!plain_loading) snprintf(l, sizeof l, "BUFFERING");
+        else if (r) snprintf(l, sizeof l, "RECONNECTING %d OF 3", r);
+        else snprintf(l, sizeof l, "TUNING IN");
+        ui_busy(!show_osd && (nowifi || plain_loading || tv_buffering()), l,
+                nowifi ? "Turn it on to keep watching" : nview ? view[watch_index]->name : "", !nowifi);
       }
+      if (audio_at && !show_osd && !ui_audio(audio_label, audio_at)) audio_at = 0;
       if (show_osd) {   // stats for nerds (SELECT)
         char l[12][96]; int n = tv_nerd(l, 12);
         ui_nerd(l, n);
       }
     } else { fill_page(); theme()->page(&page); }
-    if (SDL_GetTicks() < toast_until) theme()->toast(toast, 0);
+    int nerd_alone = screen == SCR_WATCH && show_osd;
+    if (SDL_GetTicks() < toast_until && !nerd_alone) theme()->toast(toast, 0);
     volume_poll();
-    if (SDL_GetTicks() < vol_until && theme()->volume) theme()->volume(vol_last, 20, mute_last);
+    if (SDL_GetTicks() < vol_until && theme()->volume && !nerd_alone) theme()->volume(vol_last, 20, mute_last);
     SDL_RenderPresent(ren);
   }
   watch_commit(1);
